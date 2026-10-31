@@ -1,0 +1,6 @@
+{
+  "name": "SPMB SMK Lentera Bangsa 2",
+  "description": "Sistem Penerimaan Murid Baru (SPMB) SMK Lentera Bangsa 2. Pendaftaran online, cek status, cetak bukti PDF A4 resmi, dan manajemen pendaftar terpadu.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
