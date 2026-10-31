@@ -1,0 +1,6 @@
+{
+  "name": "SPMB SMK Lentera Bangsa 2",
+  "description": "Sistem Penerimaan Murid Baru (SPMB) SMK Lentera Bangsa 2 dengan sinkronisasi Supabase Realtime, formulir cetak A4 profesional tanpa kop surat, dan manajemen pendaftar lengkap.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
