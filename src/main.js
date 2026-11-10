@@ -9,11 +9,17 @@ const SUPABASE_URL = 'https://ttxjmrpnanfunegquefr.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR0eGptcnBuYW5mdW5lZ3F1ZWZyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQzMTYwNzEsImV4cCI6MjEwOTg5MjA3MX0.84nwkZgnfOLABqbxp__UnOeWbSL7dQHcsOFfdRYGBS0';
 
 let supabase = null;
-if (window.supabase && typeof window.supabase.createClient === 'function') {
-  try {
-    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  } catch (err) {}
+function getSupabaseClient() {
+  if (!supabase && window.supabase && typeof window.supabase.createClient === 'function') {
+    try {
+      supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    } catch (err) {
+      console.warn('Supabase init error:', err);
+    }
+  }
+  return supabase;
 }
+supabase = getSupabaseClient();
 
 // ================= 2. STORAGE KEYS & SEED DATA =================
 const STORAGE_KEYS = {
@@ -327,6 +333,251 @@ let appState = {
   lastRegisteredStudent: null
 };
 
+// ================= 2B. SUPABASE REALTIME & CLOUD SYNC =================
+let isRealtimeSubscribed = false;
+
+async function initSupabaseCloud() {
+  const client = getSupabaseClient();
+  if (!client) return;
+
+  try {
+    // 1. Fetch settings
+    const { data: setRows } = await client.from('settings').select('*');
+    if (setRows && setRows.length > 0) {
+      appState.settings = { ...appState.settings, ...setRows[0] };
+      setLocalData(STORAGE_KEYS.SETTINGS, appState.settings);
+    }
+
+    // 2. Fetch jurusan
+    const { data: jurRows } = await client.from('jurusan').select('*');
+    if (jurRows && jurRows.length > 0) {
+      appState.jurusan = jurRows;
+      setLocalData(STORAGE_KEYS.JURUSAN, appState.jurusan);
+    }
+
+    // 3. Fetch gelombang
+    const { data: gelRows } = await client.from('gelombang').select('*');
+    if (gelRows && gelRows.length > 0) {
+      appState.gelombang = gelRows;
+      setLocalData(STORAGE_KEYS.GELOMBANG, appState.gelombang);
+    }
+
+    // 4. Fetch pengumuman
+    const { data: annRows } = await client.from('pengumuman').select('*').order('created_at', { ascending: false });
+    if (annRows && annRows.length > 0) {
+      appState.pengumuman = annRows;
+      setLocalData(STORAGE_KEYS.PENGUMUMAN, appState.pengumuman);
+    }
+
+    // 5. Fetch form_fields
+    const { data: formRows } = await client.from('form_fields').select('*').order('sort_order', { ascending: true });
+    if (formRows && formRows.length > 0) {
+      appState.formFields = formRows;
+      setLocalData(STORAGE_KEYS.FORM_FIELDS, appState.formFields);
+    }
+
+    // 6. Fetch pendaftar
+    const { data: pndRows } = await client.from('pendaftar').select('*').order('created_at', { ascending: false });
+    if (pndRows && pndRows.length > 0) {
+      appState.pendaftar = pndRows.map(p => ({
+        ...p,
+        formData: p.form_data || p.formData || {}
+      }));
+      setLocalData(STORAGE_KEYS.PENDAFTAR, appState.pendaftar);
+    }
+
+    // 7. Fetch banners (safe catch for permission fallback)
+    try {
+      const { data: banRows, error: banErr } = await client.from('banners').select('*').order('urutan', { ascending: true });
+      if (!banErr && banRows && banRows.length > 0) {
+        appState.banners = banRows;
+        setLocalData(STORAGE_KEYS.BANNERS, appState.banners);
+      }
+    } catch (e) {}
+
+    // Re-render all views with cloud data
+    renderAllViews();
+  } catch (err) {
+    console.warn('Initial Supabase sync notice:', err);
+  }
+
+  // Setup Realtime subscriptions
+  setupRealtimeListeners();
+}
+
+function setupRealtimeListeners() {
+  const client = getSupabaseClient();
+  if (!client || isRealtimeSubscribed) return;
+  isRealtimeSubscribed = true;
+
+  try {
+    client.channel('spmb_realtime_broadcast')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pendaftar' }, (payload) => {
+        handleRealtimePendaftar(payload);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'jurusan' }, (payload) => {
+        handleRealtimeJurusan(payload);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'gelombang' }, (payload) => {
+        handleRealtimeGelombang(payload);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pengumuman' }, (payload) => {
+        handleRealtimePengumuman(payload);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'form_fields' }, (payload) => {
+        handleRealtimeFormFields(payload);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, (payload) => {
+        handleRealtimeSettings(payload);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'banners' }, (payload) => {
+        handleRealtimeBanners(payload);
+      })
+      .subscribe((status, err) => {
+        if (err) console.warn('Supabase Realtime subscription warning:', err);
+      });
+  } catch (e) {
+    console.warn('Realtime channel setup error:', e);
+  }
+}
+
+function handleRealtimePendaftar(payload) {
+  const { eventType, new: newRec, old: oldRec } = payload;
+  if (eventType === 'INSERT' && newRec) {
+    const mapped = {
+      ...newRec,
+      formData: newRec.form_data || newRec.formData || {}
+    };
+    const exists = appState.pendaftar.some(p => p.id === mapped.id || p.kode === mapped.kode);
+    if (!exists) {
+      appState.pendaftar.unshift(mapped);
+      setLocalData(STORAGE_KEYS.PENDAFTAR, appState.pendaftar);
+      renderAdminCounters();
+      renderAdminPendaftarTable();
+      renderPublicStats();
+      if (typeof window.showToast === 'function') {
+        window.showToast(`Pendaftar baru masuk secara realtime: ${mapped.nama} (${mapped.kode})`, 'info');
+      }
+    }
+  } else if (eventType === 'UPDATE' && newRec) {
+    const idx = appState.pendaftar.findIndex(p => p.id === newRec.id || p.kode === newRec.kode);
+    if (idx !== -1) {
+      appState.pendaftar[idx] = {
+        ...appState.pendaftar[idx],
+        ...newRec,
+        formData: newRec.form_data || newRec.formData || appState.pendaftar[idx].formData
+      };
+      setLocalData(STORAGE_KEYS.PENDAFTAR, appState.pendaftar);
+      renderAdminCounters();
+      renderAdminPendaftarTable();
+      renderPublicStats();
+    }
+  } else if (eventType === 'DELETE' && oldRec) {
+    appState.pendaftar = appState.pendaftar.filter(p => p.id !== oldRec.id && p.kode !== oldRec.kode);
+    setLocalData(STORAGE_KEYS.PENDAFTAR, appState.pendaftar);
+    renderAdminCounters();
+    renderAdminPendaftarTable();
+    renderPublicStats();
+  }
+}
+
+function handleRealtimeJurusan(payload) {
+  const { eventType, new: newRec, old: oldRec } = payload;
+  if (eventType === 'INSERT' && newRec) {
+    if (!appState.jurusan.some(j => j.id === newRec.id)) {
+      appState.jurusan.push(newRec);
+    }
+  } else if (eventType === 'UPDATE' && newRec) {
+    const idx = appState.jurusan.findIndex(j => j.id === newRec.id);
+    if (idx !== -1) appState.jurusan[idx] = newRec;
+  } else if (eventType === 'DELETE' && oldRec) {
+    appState.jurusan = appState.jurusan.filter(j => j.id !== oldRec.id);
+  }
+  setLocalData(STORAGE_KEYS.JURUSAN, appState.jurusan);
+  renderJurusanAll();
+  renderPublicRegistrationForm();
+}
+
+function handleRealtimeGelombang(payload) {
+  const { eventType, new: newRec, old: oldRec } = payload;
+  if (eventType === 'INSERT' && newRec) {
+    if (!appState.gelombang.some(g => g.id === newRec.id)) {
+      appState.gelombang.push(newRec);
+    }
+  } else if (eventType === 'UPDATE' && newRec) {
+    const idx = appState.gelombang.findIndex(g => g.id === newRec.id);
+    if (idx !== -1) appState.gelombang[idx] = newRec;
+  } else if (eventType === 'DELETE' && oldRec) {
+    appState.gelombang = appState.gelombang.filter(g => g.id !== oldRec.id);
+  }
+  setLocalData(STORAGE_KEYS.GELOMBANG, appState.gelombang);
+  renderGelombangCards();
+  renderAdminGelombangTable();
+  renderPublicRegistrationForm();
+  renderPublicStats();
+}
+
+function handleRealtimePengumuman(payload) {
+  const { eventType, new: newRec, old: oldRec } = payload;
+  if (eventType === 'INSERT' && newRec) {
+    if (!appState.pengumuman.some(p => p.id === newRec.id)) {
+      appState.pengumuman.unshift(newRec);
+    }
+  } else if (eventType === 'UPDATE' && newRec) {
+    const idx = appState.pengumuman.findIndex(p => p.id === newRec.id);
+    if (idx !== -1) appState.pengumuman[idx] = newRec;
+  } else if (eventType === 'DELETE' && oldRec) {
+    appState.pengumuman = appState.pengumuman.filter(p => p.id !== oldRec.id);
+  }
+  setLocalData(STORAGE_KEYS.PENGUMUMAN, appState.pengumuman);
+  renderPengumumanCards();
+  renderAdminPengumumanTable();
+}
+
+function handleRealtimeFormFields(payload) {
+  const { eventType, new: newRec, old: oldRec } = payload;
+  if (eventType === 'INSERT' && newRec) {
+    if (!appState.formFields.some(f => f.id === newRec.id)) {
+      appState.formFields.push(newRec);
+    }
+  } else if (eventType === 'UPDATE' && newRec) {
+    const idx = appState.formFields.findIndex(f => f.id === newRec.id);
+    if (idx !== -1) appState.formFields[idx] = newRec;
+  } else if (eventType === 'DELETE' && oldRec) {
+    appState.formFields = appState.formFields.filter(f => f.id !== oldRec.id);
+  }
+  appState.formFields.sort((a, b) => (a.sort_order || 1) - (b.sort_order || 1));
+  setLocalData(STORAGE_KEYS.FORM_FIELDS, appState.formFields);
+  renderAdminFormFieldsList();
+  renderPublicRegistrationForm();
+}
+
+function handleRealtimeSettings(payload) {
+  const { new: newRec } = payload;
+  if (newRec) {
+    appState.settings = { ...appState.settings, ...newRec };
+    setLocalData(STORAGE_KEYS.SETTINGS, appState.settings);
+    renderSchoolSettingsUI();
+  }
+}
+
+function handleRealtimeBanners(payload) {
+  const { eventType, new: newRec, old: oldRec } = payload;
+  if (eventType === 'INSERT' && newRec) {
+    if (!appState.banners.some(b => b.id === newRec.id)) {
+      appState.banners.push(newRec);
+    }
+  } else if (eventType === 'UPDATE' && newRec) {
+    const idx = appState.banners.findIndex(b => b.id === newRec.id);
+    if (idx !== -1) appState.banners[idx] = newRec;
+  } else if (eventType === 'DELETE' && oldRec) {
+    appState.banners = appState.banners.filter(b => b.id !== oldRec.id);
+  }
+  setLocalData(STORAGE_KEYS.BANNERS, appState.banners);
+  renderHeroSlider();
+  renderAdminBannerList();
+}
+
 // ================= 3. TOAST NOTIFICATION SYSTEM =================
 window.showToast = function(message, type = 'success', duration = 4000) {
   const container = document.getElementById('toastContainer');
@@ -610,6 +861,22 @@ window.handleSaveFormField = function(event) {
   renderPublicRegistrationForm();
   renderAdminFormBuilder();
   window.showToast('Isian formulir berhasil diperbarui.', 'success');
+
+  const client = getSupabaseClient();
+  if (client) {
+    client.from('form_fields').upsert([{
+      id: newField.id,
+      section: newField.section,
+      label: newField.label,
+      type: newField.type,
+      required: !!newField.required,
+      placeholder: newField.placeholder || '',
+      options: newField.options || [],
+      sort_order: existingIdx !== -1 ? (existingIdx + 1) : appState.formFields.length
+    }]).then(({ error }) => {
+      if (error) console.warn('Supabase upsert form_field error:', error);
+    }).catch(err => console.warn('Supabase upsert form_field err:', err));
+  }
 };
 
 window.confirmDeleteFormField = function(fieldId) {
@@ -620,6 +887,13 @@ window.confirmDeleteFormField = function(fieldId) {
     renderPublicRegistrationForm();
     renderAdminFormBuilder();
     window.showToast('Kolom isian formulir telah dihapus.', 'info');
+
+    const client = getSupabaseClient();
+    if (client) {
+      client.from('form_fields').delete().eq('id', fieldId).then(({ error }) => {
+        if (error) console.warn('Supabase delete form_field error:', error);
+      }).catch(err => console.warn('Supabase delete form_field err:', err));
+    }
   });
 };
 
@@ -704,6 +978,27 @@ window.handleRegistrationSubmit = async function(event) {
     appState.pendaftar.unshift(newPendaftar);
     setLocalData(STORAGE_KEYS.PENDAFTAR, appState.pendaftar);
     appState.lastRegisteredStudent = newPendaftar;
+
+    // Send to Supabase Cloud Database for Instant Multi-Device Sync
+    const client = getSupabaseClient();
+    if (client) {
+      client.from('pendaftar').insert([{
+        id: newPendaftar.id,
+        kode: newPendaftar.kode,
+        nama: newPendaftar.nama,
+        nisn: newPendaftar.nisn,
+        nik: newPendaftar.nik,
+        jurusan: newPendaftar.jurusan,
+        gelombang: newPendaftar.gelombang,
+        asal_sekolah: newPendaftar.asal_sekolah,
+        status: newPendaftar.status,
+        catatan: newPendaftar.catatan,
+        foto_url: newPendaftar.foto_url || '',
+        form_data: newPendaftar.formData || {}
+      }]).then(({ error }) => {
+        if (error) console.warn('Supabase insert pendaftar warning:', error);
+      }).catch(err => console.warn('Supabase insert pendaftar err:', err));
+    }
 
     // Reset Form
     form.reset();
@@ -1167,6 +1462,12 @@ CREATE POLICY "Allow anon all on banners" ON public.banners FOR ALL USING (true)
 CREATE POLICY "Allow anon all on form_fields" ON public.form_fields FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow anon all on settings" ON public.settings FOR ALL USING (true) WITH CHECK (true);
 
+-- HAK AKSES PERMISSIONS SCHEMA & TABEL UNTUK ANON & AUTHENTICATED
+GRANT USAGE ON SCHEMA public TO anon, authenticated;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated;
+
 -- AKTIFKAN SUPABASE REALTIME SUBSCRIPTION
 ALTER PUBLICATION supabase_realtime ADD TABLE public.pendaftar;
 ALTER PUBLICATION supabase_realtime ADD TABLE public.jurusan;
@@ -1518,6 +1819,16 @@ window.handleAdminQuickStatusChange = function(kode, newStatus) {
   renderAdminCounters();
   renderAdminPendaftarTable();
   window.showToast(`Status ${student.nama} diubah: ${newStatus}`, 'success');
+
+  const client = getSupabaseClient();
+  if (client) {
+    client.from('pendaftar').update({
+      status: student.status,
+      catatan: student.catatan
+    }).eq('id', student.id).then(({ error }) => {
+      if (error) console.warn('Supabase update status error:', error);
+    }).catch(err => console.warn('Supabase update status err:', err));
+  }
 };
 
 window.openEditPendaftarModal = function(kode) {
@@ -1561,6 +1872,20 @@ window.handleSaveEditPendaftar = function(event) {
   renderAdminCounters();
   renderAdminPendaftarTable();
   window.showToast('Data calon siswa berhasil diperbarui.', 'success');
+
+  const client = getSupabaseClient();
+  if (client) {
+    client.from('pendaftar').update({
+      nama: student.nama,
+      nisn: student.nisn,
+      status: student.status,
+      jurusan: student.jurusan,
+      catatan: student.catatan,
+      form_data: student.formData
+    }).eq('id', student.id).then(({ error }) => {
+      if (error) console.warn('Supabase update pendaftar error:', error);
+    }).catch(err => console.warn('Supabase update pendaftar err:', err));
+  }
 };
 
 window.confirmDeletePendaftar = function(kode) {
@@ -1568,12 +1893,20 @@ window.confirmDeletePendaftar = function(kode) {
   if (!student) return;
 
   requestConfirmDelete(`Hapus pendaftar ${student.nama} (${student.kode})?`, () => {
+    const studentId = student.id;
     appState.pendaftar = appState.pendaftar.filter(p => p.kode !== kode);
     setLocalData(STORAGE_KEYS.PENDAFTAR, appState.pendaftar);
     renderAdminCounters();
     renderAdminPendaftarTable();
     renderPublicStats();
     window.showToast('Data pendaftar telah dihapus.', 'info');
+
+    const client = getSupabaseClient();
+    if (client) {
+      client.from('pendaftar').delete().eq('id', studentId).then(({ error }) => {
+        if (error) console.warn('Supabase delete pendaftar error:', error);
+      }).catch(err => console.warn('Supabase delete pendaftar err:', err));
+    }
   });
 };
 
@@ -1780,6 +2113,13 @@ window.handleSaveJurusan = function(event) {
   renderJurusanAll();
   renderPublicRegistrationForm();
   window.showToast('Program keahlian berhasil disimpan.', 'success');
+
+  const client = getSupabaseClient();
+  if (client) {
+    client.from('jurusan').upsert([newJur]).then(({ error }) => {
+      if (error) console.warn('Supabase upsert jurusan error:', error);
+    }).catch(err => console.warn('Supabase upsert jurusan err:', err));
+  }
 };
 
 window.confirmDeleteJurusan = function(id) {
@@ -1794,6 +2134,13 @@ window.confirmDeleteJurusan = function(id) {
     renderJurusanAll();
     renderPublicRegistrationForm();
     window.showToast('Program keahlian telah dihapus.', 'info');
+
+    const client = getSupabaseClient();
+    if (client) {
+      client.from('jurusan').delete().eq('id', id).then(({ error }) => {
+        if (error) console.warn('Supabase delete jurusan error:', error);
+      }).catch(err => console.warn('Supabase delete jurusan err:', err));
+    }
   });
 };
 
@@ -1964,6 +2311,13 @@ window.handleSaveGelombang = function(event) {
   renderAdminGelombangTable();
   renderPublicRegistrationForm();
   window.showToast('Gelombang pendaftaran berhasil disimpan.', 'success');
+
+  const client = getSupabaseClient();
+  if (client) {
+    client.from('gelombang').upsert([newGel]).then(({ error }) => {
+      if (error) console.warn('Supabase upsert gelombang error:', error);
+    }).catch(err => console.warn('Supabase upsert gelombang err:', err));
+  }
 };
 
 window.confirmDeleteGelombang = function(id) {
@@ -1975,6 +2329,13 @@ window.confirmDeleteGelombang = function(id) {
     renderAdminGelombangTable();
     renderPublicRegistrationForm();
     window.showToast('Gelombang berhasil dihapus.', 'info');
+
+    const client = getSupabaseClient();
+    if (client) {
+      client.from('gelombang').delete().eq('id', id).then(({ error }) => {
+        if (error) console.warn('Supabase delete gelombang error:', error);
+      }).catch(err => console.warn('Supabase delete gelombang err:', err));
+    }
   });
 };
 
@@ -2094,6 +2455,13 @@ window.handleSavePengumuman = function(event) {
   renderPengumumanCards();
   renderAdminPengumumanTable();
   window.showToast('Pengumuman berhasil dipublikasikan.', 'success');
+
+  const client = getSupabaseClient();
+  if (client) {
+    client.from('pengumuman').upsert([newAnn]).then(({ error }) => {
+      if (error) console.warn('Supabase upsert pengumuman error:', error);
+    }).catch(err => console.warn('Supabase upsert pengumuman err:', err));
+  }
 };
 
 window.confirmDeletePengumuman = function(id) {
@@ -2104,6 +2472,13 @@ window.confirmDeletePengumuman = function(id) {
     renderPengumumanCards();
     renderAdminPengumumanTable();
     window.showToast('Pengumuman telah dihapus.', 'info');
+
+    const client = getSupabaseClient();
+    if (client) {
+      client.from('pengumuman').delete().eq('id', id).then(({ error }) => {
+        if (error) console.warn('Supabase delete pengumuman error:', error);
+      }).catch(err => console.warn('Supabase delete pengumuman err:', err));
+    }
   });
 };
 
@@ -2326,6 +2701,13 @@ window.handleSaveBanner = function(event) {
   renderHeroSlider();
   renderAdminBannerList();
   window.showToast('Banner promosi berhasil disimpan.', 'success');
+
+  const client = getSupabaseClient();
+  if (client) {
+    client.from('banners').upsert([newBanner]).then(({ error }) => {
+      if (error) console.warn('Supabase upsert banner warning:', error);
+    }).catch(err => console.warn('Supabase upsert banner err:', err));
+  }
 };
 
 window.toggleBannerStatus = function(id) {
@@ -2336,6 +2718,13 @@ window.toggleBannerStatus = function(id) {
   renderHeroSlider();
   renderAdminBannerList();
   window.showToast(`Status banner: ${b.status}`, 'info');
+
+  const client = getSupabaseClient();
+  if (client) {
+    client.from('banners').update({ status: b.status }).eq('id', id).then(({ error }) => {
+      if (error) console.warn('Supabase update banner status warning:', error);
+    }).catch(err => console.warn('Supabase update banner status err:', err));
+  }
 };
 
 window.confirmDeleteBanner = function(id) {
@@ -2350,6 +2739,13 @@ window.confirmDeleteBanner = function(id) {
     renderHeroSlider();
     renderAdminBannerList();
     window.showToast('Banner berhasil dihapus.', 'info');
+
+    const client = getSupabaseClient();
+    if (client) {
+      client.from('banners').delete().eq('id', id).then(({ error }) => {
+        if (error) console.warn('Supabase delete banner warning:', error);
+      }).catch(err => console.warn('Supabase delete banner err:', err));
+    }
   });
 };
 
@@ -2368,6 +2764,24 @@ window.handleSaveSchoolSettings = function(event) {
   setLocalData(STORAGE_KEYS.SETTINGS, appState.settings);
   renderSchoolSettingsUI();
   window.showToast('Identitas sekolah & data panitia berhasil diperbarui.', 'success');
+
+  const client = getSupabaseClient();
+  if (client) {
+    client.from('settings').upsert([{
+      id: 'default',
+      nama_sekolah: appState.settings.nama_sekolah,
+      slogan: appState.settings.slogan || '',
+      alamat: appState.settings.alamat || '',
+      wa: appState.settings.wa || '',
+      email: appState.settings.email || '',
+      logo_url: appState.settings.logo_url || '',
+      nama_ketua_panitia: appState.settings.nama_ketua_panitia || '',
+      nip_ketua_panitia: appState.settings.nip_ketua_panitia || '',
+      wa_group_url: appState.settings.wa_group_url || ''
+    }]).then(({ error }) => {
+      if (error) console.warn('Supabase upsert settings error:', error);
+    }).catch(err => console.warn('Supabase upsert settings err:', err));
+  }
 };
 
 window.handleLogoUpload = function(event) {
@@ -2380,6 +2794,11 @@ window.handleLogoUpload = function(event) {
     setLocalData(STORAGE_KEYS.SETTINGS, appState.settings);
     renderSchoolSettingsUI();
     window.showToast('Logo sekolah berhasil diunggah.', 'success');
+
+    const client = getSupabaseClient();
+    if (client) {
+      client.from('settings').update({ logo_url: appState.settings.logo_url }).eq('id', 'default').catch(err => console.warn(err));
+    }
   };
   reader.readAsDataURL(file);
 };
@@ -2466,8 +2885,9 @@ function renderAllViews() {
   }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+function initApp() {
   renderAllViews();
+  initSupabaseCloud();
 
   const hash = window.location.hash;
   if (hash.includes('status')) {
@@ -2482,4 +2902,10 @@ document.addEventListener('DOMContentLoaded', () => {
       }, 300);
     }
   }
-});
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initApp);
+} else {
+  initApp();
+}
