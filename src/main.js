@@ -1353,9 +1353,9 @@ window.printBlankoNow = function() {
 
 // ================= 9. SUPABASE SQL DDL SCRIPT & MODAL =================
 const SUPABASE_DDL_SQL = `-- ========================================================
--- SKRIP SQL LENGKAP DATABASE SUPABASE
--- SPMB SMK LENTERA BANGSA 2
--- Eksekusi di Supabase Dashboard -> SQL Editor -> Run
+-- SKRIP SQL LENGKAP & OPTIMAL DATABASE SUPABASE
+-- SPMB SMK LENTERA BANGSA 2 (REALTIME & MULTI-GUEST ACCESS)
+-- Eksekusi di: Supabase Dashboard -> SQL Editor -> Run
 -- ========================================================
 
 -- 1. TABEL PENDAFTAR (CALON SISWA)
@@ -1444,7 +1444,9 @@ CREATE TABLE IF NOT EXISTS public.settings (
   wa_group_url TEXT
 );
 
--- AKTIFKAN ROW LEVEL SECURITY (RLS)
+-- ========================================================
+-- ROW LEVEL SECURITY (RLS) & KEBIJAKAN AKSES MULTI-GUEST
+-- ========================================================
 ALTER TABLE public.pendaftar ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.jurusan ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.gelombang ENABLE ROW LEVEL SECURITY;
@@ -1453,29 +1455,83 @@ ALTER TABLE public.banners ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.form_fields ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.settings ENABLE ROW LEVEL SECURITY;
 
--- KEBIJAKAN AKSES UNTUK KUNCI ANON
-CREATE POLICY "Allow anon all on pendaftar" ON public.pendaftar FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow anon all on jurusan" ON public.jurusan FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow anon all on gelombang" ON public.gelombang FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow anon all on pengumuman" ON public.pengumuman FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow anon all on banners" ON public.banners FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow anon all on form_fields" ON public.form_fields FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow anon all on settings" ON public.settings FOR ALL USING (true) WITH CHECK (true);
+-- Reset kebijakan lama jika ada agar tidak error duplikat
+DROP POLICY IF EXISTS "Allow anon all on pendaftar" ON public.pendaftar;
+DROP POLICY IF EXISTS "Allow anon all on jurusan" ON public.jurusan;
+DROP POLICY IF EXISTS "Allow anon all on gelombang" ON public.gelombang;
+DROP POLICY IF EXISTS "Allow anon all on pengumuman" ON public.pengumuman;
+DROP POLICY IF EXISTS "Allow anon all on banners" ON public.banners;
+DROP POLICY IF EXISTS "Allow anon all on form_fields" ON public.form_fields;
+DROP POLICY IF EXISTS "Allow anon all on settings" ON public.settings;
 
--- HAK AKSES PERMISSIONS SCHEMA & TABEL UNTUK ANON & AUTHENTICATED
-GRANT USAGE ON SCHEMA public TO anon, authenticated;
-GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated;
+-- Buat Kebijakan Akses Penuh untuk Pengguna Publik & Multi-Guest (anon & authenticated)
+CREATE POLICY "Allow anon all on pendaftar" ON public.pendaftar FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Allow anon all on jurusan" ON public.jurusan FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Allow anon all on gelombang" ON public.gelombang FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Allow anon all on pengumuman" ON public.pengumuman FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Allow anon all on banners" ON public.banners FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Allow anon all on form_fields" ON public.form_fields FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Allow anon all on settings" ON public.settings FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
 
--- AKTIFKAN SUPABASE REALTIME SUBSCRIPTION
-ALTER PUBLICATION supabase_realtime ADD TABLE public.pendaftar;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.jurusan;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.gelombang;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.pengumuman;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.banners;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.form_fields;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.settings;
+-- ========================================================
+-- HAK AKSES EKSPLISIT (GRANT) UNTUK ONLINE & MULTI-GUEST
+-- Memberi izin baca, tulis, update, delete secara instan
+-- ========================================================
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON ROUTINES TO anon, authenticated, service_role;
+
+-- ========================================================
+-- OPTIMASI REALTIME LENGKAP (REPLICA IDENTITY FULL)
+-- Memastikan saat UPDATE/DELETE payload dikirim lengkap
+-- ========================================================
+ALTER TABLE public.pendaftar REPLICA IDENTITY FULL;
+ALTER TABLE public.jurusan REPLICA IDENTITY FULL;
+ALTER TABLE public.gelombang REPLICA IDENTITY FULL;
+ALTER TABLE public.pengumuman REPLICA IDENTITY FULL;
+ALTER TABLE public.banners REPLICA IDENTITY FULL;
+ALTER TABLE public.form_fields REPLICA IDENTITY FULL;
+ALTER TABLE public.settings REPLICA IDENTITY FULL;
+
+-- ========================================================
+-- PUBLIKASI REALTIME SUPABASE (IDEMPOTENT / AMAN DIEKSEKUSI)
+-- ========================================================
+DO $$
+BEGIN
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.pendaftar;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.jurusan;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.gelombang;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.pengumuman;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.banners;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.form_fields;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.settings;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+END $$;
 `;
 
 window.openSupabaseSqlModal = function() {
