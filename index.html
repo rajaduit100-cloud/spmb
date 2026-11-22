@@ -83,7 +83,9 @@
       #modalPrintCard:not(.hidden) #printArea,
       #modalPrintCard:not(.hidden) #printArea *,
       #modalBlankoFormulir:not(.hidden) #blankoPrintArea,
-      #modalBlankoFormulir:not(.hidden) #blankoPrintArea * {
+      #modalBlankoFormulir:not(.hidden) #blankoPrintArea *,
+      #modalPrintRekap:not(.hidden) #rekapPrintArea,
+      #modalPrintRekap:not(.hidden) #rekapPrintArea * {
         visibility: visible;
       }
       #modalPrintCard:not(.hidden) #printArea,
@@ -94,6 +96,17 @@
         width: 210mm;
         height: 296mm;
         margin: 0 !important;
+        box-shadow: none !important;
+        background: #fff !important;
+        color: #000 !important;
+      }
+      #modalPrintRekap:not(.hidden) #rekapPrintArea {
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: 100%;
+        margin: 0 !important;
+        padding: 8mm !important;
         box-shadow: none !important;
         background: #fff !important;
         color: #000 !important;
@@ -203,6 +216,48 @@
     }
     ::-webkit-scrollbar-thumb:hover {
       background: #94a3b8;
+    }
+
+    /* Official Sign in with Google button style */
+    .gsi-material-button {
+      -moz-user-select: none;
+      -webkit-user-select: none;
+      -ms-user-select: none;
+      background-color: #ffffff;
+      border: 1px solid #747775;
+      border-radius: 8px;
+      box-sizing: border-box;
+      color: #1f1f1f;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      font-family: 'Plus Jakarta Sans', Roboto, Arial, sans-serif;
+      font-size: 12px;
+      font-weight: 600;
+      height: 36px;
+      letter-spacing: 0.2px;
+      padding: 0 14px;
+      position: relative;
+      transition: background-color .2s, box-shadow .2s;
+      white-space: nowrap;
+    }
+    .gsi-material-button:hover {
+      background-color: #f8fafc;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+    }
+    .gsi-material-button:disabled {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+    .gsi-material-button-content-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .gsi-material-button-icon {
+      height: 16px;
+      width: 16px;
+      flex-shrink: 0;
     }
   </style>
 </head>
@@ -520,19 +575,22 @@
         <div class="flex items-center gap-3">
           <div class="w-8 h-8 rounded-lg bg-emerald-600 flex items-center justify-center font-bold text-white text-sm">LB</div>
           <div>
-            <h1 class="font-bold text-sm tracking-tight">PANEL ADMIN SPMB · SMK LENTERA BANGSA 2</h1>
+            <div class="flex items-center gap-2">
+              <h1 class="font-bold text-sm tracking-tight">PANEL ADMIN SPMB · SMK LENTERA BANGSA 2</h1>
+              <span id="adminRoleBadge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">Admin Utama</span>
+            </div>
             <div class="text-[11px] text-slate-300 font-medium">Sistem Manajemen Penerimaan Murid Baru</div>
           </div>
         </div>
 
         <div class="flex items-center gap-2 sm:gap-3">
           <!-- Button to View & Copy Supabase SQL DDL -->
-          <button onclick="openSupabaseSqlModal()" class="px-3 py-1.5 text-xs text-emerald-300 hover:text-white bg-emerald-950/60 hover:bg-emerald-900/80 rounded-lg transition-colors border border-emerald-500/30 flex items-center gap-1.5" title="Salin Kode SQL Supabase">
+          <button id="btnAdminSqlModal" onclick="openSupabaseSqlModal()" class="px-3 py-1.5 text-xs text-emerald-300 hover:text-white bg-emerald-950/60 hover:bg-emerald-900/80 rounded-lg transition-colors border border-emerald-500/30 flex items-center gap-1.5" title="Salin Kode SQL Supabase">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
             <span class="hidden sm:inline">Skrip SQL Supabase</span>
           </button>
 
-          <button onclick="openBlankoFormulirModal()" class="hidden md:inline-flex px-3 py-1.5 text-xs text-slate-300 hover:text-white hover:bg-white/10 rounded-lg transition-colors items-center gap-1.5 border border-white/20">
+          <button id="btnAdminBlanko" onclick="openBlankoFormulirModal()" class="hidden md:inline-flex px-3 py-1.5 text-xs text-slate-300 hover:text-white hover:bg-white/10 rounded-lg transition-colors items-center gap-1.5 border border-white/20">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path></svg>
             <span>Blanko Formulir</span>
           </button>
@@ -556,6 +614,10 @@
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center gap-2 py-2">
         <button onclick="switchAdminTab('pendaftar')" id="tabBtn-pendaftar" class="admin-tab-btn px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors bg-primary-800 text-white whitespace-nowrap">
           Kelola Data Pendaftar
+        </button>
+        <button onclick="switchAdminTab('rekap')" id="tabBtn-rekap" class="admin-tab-btn px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors text-slate-600 hover:bg-slate-100 whitespace-nowrap flex items-center gap-1.5">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+          <span>Rekapan Hasil Pendaftaran</span>
         </button>
         <button onclick="switchAdminTab('form_builder')" id="tabBtn-form_builder" class="admin-tab-btn px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors text-slate-600 hover:bg-slate-100 whitespace-nowrap flex items-center gap-1">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
@@ -628,7 +690,7 @@
             </select>
           </div>
 
-          <div class="flex items-center gap-2">
+          <div id="adminPendaftarToolbarActions" class="flex items-center gap-2">
             <button onclick="exportPendaftarToCSV()" class="px-3.5 py-2 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap">
               <svg class="w-3.5 h-3.5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
               <span>Export Excel / CSV</span>
@@ -663,6 +725,156 @@
 
           <div id="adminPendaftarEmpty" class="hidden p-8 text-center text-slate-500 text-xs">
             Tidak ada calon siswa yang cocok dengan filter pencarian Anda.
+          </div>
+        </div>
+
+      </div>
+
+      <!-- TAB 1B: REKAPAN HASIL PENDAFTARAN (ADMIN INTI & ADMIN BAYANGAN) -->
+      <div id="tabContent-rekap" class="admin-tab-content hidden space-y-6">
+
+        <!-- Header & Aksi Ekspor / Cetak -->
+        <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div>
+            <h2 class="text-base font-bold text-slate-900">Rekapan Lengkap Hasil Pendaftaran SPMB</h2>
+            <p class="text-xs text-slate-500 mt-0.5">Menampilkan seluruh kolom sesuai pengaturan isian formulir aktif. Dapat dicetak, diekspor ke Excel (.xlsx), dan disinkronkan ke Google Sheets.</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button onclick="exportRekapToExcelFile()" class="px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-sm flex items-center gap-1.5 whitespace-nowrap">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+              <span>Simpan File Excel (.xlsx)</span>
+            </button>
+            <button onclick="openPrintRekapModal()" class="px-4 py-2 text-xs font-bold text-primary-900 bg-primary-50 hover:bg-primary-100 border border-primary-200 rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap">
+              <svg class="w-4 h-4 text-primary-700" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path></svg>
+              <span>Cetak / Simpan PDF</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Panel Integrasi Google Sheets -->
+        <div class="bg-white p-5 rounded-xl border border-emerald-200 shadow-sm space-y-4">
+          <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-3 border-b border-slate-100">
+            <div class="flex items-start gap-3">
+              <div class="w-9 h-9 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-8 14H7v-4h4v4zm0-6H7V7h4v4zm6 6h-4v-4h4v4zm0-6h-4V7h4v4z"/></svg>
+              </div>
+              <div>
+                <h3 class="text-sm font-bold text-slate-900">Integrasi Google Sheets Otomatis &amp; Rapi</h3>
+                <p id="rekapGoogleStatusText" class="text-xs text-slate-500">Hubungkan akun Google Anda untuk membuat atau memperbarui rekapan langsung di Google Sheets.</p>
+              </div>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+              <button id="btnGoogleSheetsSignIn" type="button" onclick="handleGoogleSheetsSignIn()" class="gsi-material-button">
+                <div class="gsi-material-button-content-wrapper">
+                  <div class="gsi-material-button-icon">
+                    <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" style="display: block;">
+                      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
+                      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
+                      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path>
+                      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path>
+                      <path fill="none" d="M0 0h48v48H0z"></path>
+                    </svg>
+                  </div>
+                  <span>Sign in with Google</span>
+                </div>
+              </button>
+
+              <div id="rekapGoogleConnectedBar" class="hidden flex items-center gap-2">
+                <span id="rekapGoogleUserBadge" class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200"></span>
+                <button type="button" onclick="handleGoogleSheetsSignOut()" class="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:text-rose-700 bg-slate-100 hover:bg-rose-50 rounded-lg transition-colors">
+                  Keluar Google
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
+            <div class="lg:col-span-6">
+              <label class="block text-xs font-semibold text-slate-700 mb-1">URL atau ID Google Spreadsheet Tujuan</label>
+              <input type="text" id="rekapGoogleSheetInput" placeholder="Tempel URL Google Sheet atau klik 'Buat Google Sheet Baru'" class="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+            </div>
+            <div class="lg:col-span-6 flex flex-wrap items-center gap-2">
+              <button type="button" id="btnCreateNewGoogleSheet" onclick="handleCreateNewGoogleSheet()" class="px-3.5 py-2 text-xs font-bold text-white bg-primary-800 hover:bg-primary-900 rounded-lg shadow-sm flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                <span>Buat Google Sheet Baru</span>
+              </button>
+              <button type="button" id="btnSyncGoogleSheet" onclick="requestConfirmSyncGoogleSheet()" class="px-3.5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-sm flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                <span>Sinkronkan ke Google Sheets</span>
+              </button>
+              <a id="rekapGoogleSheetLink" href="#" target="_blank" rel="noopener noreferrer" class="hidden px-3.5 py-2 text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg inline-flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                <span>Buka Google Sheet</span>
+              </a>
+            </div>
+          </div>
+          <div id="rekapGoogleSyncMeta" class="text-[11px] text-slate-400"></div>
+        </div>
+
+        <!-- Filter Rekapan -->
+        <div class="bg-white p-4 rounded-xl border border-slate-200 flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
+          <div class="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <input type="text" id="rekapSearchInput" oninput="renderAdminRekapTable()" placeholder="Cari Nama, NISN, NIK, Kode, Asal Sekolah..." class="px-3 py-2 text-xs rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-primary-500" />
+            <select id="rekapFilterJurusan" onchange="renderAdminRekapTable()" class="px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white">
+              <option value="">Semua Jurusan</option>
+            </select>
+            <select id="rekapFilterGelombang" onchange="renderAdminRekapTable()" class="px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white">
+              <option value="">Semua Gelombang</option>
+            </select>
+            <select id="rekapFilterStatus" onchange="renderAdminRekapTable()" class="px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white">
+              <option value="">Semua Status</option>
+              <option value="Pending">Pending</option>
+              <option value="Diverifikasi">Diverifikasi</option>
+              <option value="Diterima">Diterima</option>
+              <option value="Ditolak">Ditolak</option>
+            </select>
+          </div>
+          <div id="rekapCountSummaryBadge" class="text-xs font-mono font-bold text-primary-900 bg-primary-50 border border-primary-200 px-3 py-2 rounded-lg whitespace-nowrap text-center">
+            0 Peserta
+          </div>
+        </div>
+
+        <!-- Ringkasan Statistik Per Jurusan -->
+        <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div class="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+            <h3 class="text-xs font-bold text-slate-800 uppercase tracking-wider">Ringkasan Rekapitulasi Per Program Keahlian</h3>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs">
+              <thead class="bg-slate-50 text-slate-700 font-bold border-b border-slate-200">
+                <tr>
+                  <th class="py-2.5 px-3">No</th>
+                  <th class="py-2.5 px-3">Kode</th>
+                  <th class="py-2.5 px-3">Program Keahlian</th>
+                  <th class="py-2.5 px-3 text-center">Kuota</th>
+                  <th class="py-2.5 px-3 text-center">Total Pendaftar</th>
+                  <th class="py-2.5 px-3 text-center text-emerald-700">Diterima</th>
+                  <th class="py-2.5 px-3 text-center text-primary-700">Diverifikasi</th>
+                  <th class="py-2.5 px-3 text-center text-amber-700">Pending</th>
+                  <th class="py-2.5 px-3 text-center text-rose-700">Ditolak</th>
+                  <th class="py-2.5 px-3 text-center">Sisa Kuota</th>
+                </tr>
+              </thead>
+              <tbody id="rekapSummaryTableBody" class="divide-y divide-slate-100 text-slate-700"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Tabel Rekapan Lengkap Sesuai Kolom Formulir -->
+        <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div class="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+            <h3 class="text-xs font-bold text-slate-800 uppercase tracking-wider">Tabel Rekapan Data Lengkap Peserta (Sesuai Isian Formulir)</h3>
+            <span class="text-[11px] text-slate-500">Geser ke samping untuk melihat semua kolom isian</span>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs border-collapse">
+              <thead id="rekapTableHead" class="bg-primary-900 text-white uppercase font-bold tracking-wider"></thead>
+              <tbody id="rekapTableBody" class="divide-y divide-slate-100 text-slate-700"></tbody>
+            </table>
+          </div>
+          <div id="rekapTableEmpty" class="hidden p-8 text-center text-slate-500 text-xs">
+            Belum ada data pendaftar yang sesuai dengan filter rekapan.
           </div>
         </div>
 
@@ -816,6 +1028,22 @@
           </div>
 
           <div id="adminBannerListContainer" class="space-y-4"></div>
+        </div>
+
+        <!-- Akun Bayangan (Petugas Terbatas Kelola & Ubah Data Pendaftar) -->
+        <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 pb-3 border-b border-slate-100">
+            <div>
+              <h3 class="text-base font-bold text-slate-900">Kelola Akun Bayangan (Petugas Pendaftar)</h3>
+              <p class="text-xs text-slate-500">Akun bayangan hanya dapat masuk ke menu <strong>Kelola Data Pendaftar</strong> dan <strong>Ubah Data Pendaftar</strong> saja.</p>
+            </div>
+            <button onclick="openAddShadowAccountModal()" class="px-3.5 py-2 text-xs font-semibold text-white bg-primary-800 hover:bg-primary-900 rounded-lg flex items-center gap-1.5 shadow-sm self-start sm:self-center whitespace-nowrap">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"></path></svg>
+              <span>Tambah Akun Bayangan</span>
+            </button>
+          </div>
+
+          <div id="adminShadowAccountListContainer" class="space-y-3"></div>
         </div>
 
       </div>
@@ -1278,53 +1506,55 @@
     </div>
   </div>
 
-  <!-- 8. MODAL EDIT/UPDATE STATUS PENDAFTAR (ADMIN) -->
-  <div id="modalEditPendaftar" class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm hidden flex items-center justify-center p-4">
-    <div class="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200">
-      <div class="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
-        <h3 class="font-bold text-slate-900 text-base">Ubah Status / Data Pendaftar</h3>
-        <button onclick="closeEditPendaftarModal()" class="text-slate-400 hover:text-slate-700 p-1">
+  <!-- 8. MODAL UBAH DATA LENGKAP & STATUS PENDAFTAR (ADMIN & AKUN BAYANGAN) -->
+  <div id="modalEditPendaftar" class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm hidden flex items-center justify-center p-3 sm:p-5">
+    <div class="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+      <div class="px-6 py-4 flex items-center justify-between border-b border-slate-100 bg-slate-50 shrink-0">
+        <div>
+          <h3 class="font-bold text-slate-900 text-base">Ubah Data Peserta Pendaftar</h3>
+          <div class="text-[11px] text-slate-500 mt-0.5">Kode Registrasi: <span id="editPendaftarKodeDisplay" class="font-mono font-bold text-primary-800">-</span></div>
+        </div>
+        <button type="button" onclick="closeEditPendaftarModal()" class="text-slate-400 hover:text-slate-700 p-1">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
         </button>
       </div>
 
-      <form onsubmit="handleSaveEditPendaftar(event)" class="space-y-4">
+      <form id="formEditPendaftar" onsubmit="handleSaveEditPendaftar(event)" novalidate class="flex-1 overflow-y-auto p-6 space-y-5">
         <input type="hidden" id="editPendaftarId" />
 
-        <div>
-          <label class="block text-xs font-semibold text-slate-700 mb-1">Nama Calon Siswa</label>
-          <input type="text" id="editPendaftarNama" required class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300" />
-        </div>
-
-        <div class="grid grid-cols-2 gap-3">
-          <div>
-            <label class="block text-xs font-semibold text-slate-700 mb-1">NISN</label>
-            <input type="text" id="editPendaftarNisn" required class="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-300" />
+        <!-- Status & Catatan Panitia -->
+        <div class="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+          <div class="text-xs font-bold text-slate-800 uppercase tracking-wider">Status Seleksi & Catatan Panitia</div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 mb-1">Status Seleksi</label>
+              <select id="editPendaftarStatus" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white">
+                <option value="Pending">Pending</option>
+                <option value="Diverifikasi">Diverifikasi</option>
+                <option value="Diterima">Diterima</option>
+                <option value="Ditolak">Ditolak</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 mb-1">Pas Foto Calon Siswa (JPG/PNG)</label>
+              <div class="flex items-center gap-2.5">
+                <input type="file" id="editPendaftarFotoInput" accept="image/jpeg,image/png,image/jpg,image/webp" onchange="previewEditStudentPhoto(event)" class="w-full text-[11px] text-slate-500 file:mr-2 file:py-1.5 file:px-2.5 file:rounded-lg file:border-0 file:text-[11px] file:font-semibold file:bg-emerald-50 file:text-emerald-700 cursor-pointer" />
+                <img id="editPendaftarFotoPreview" src="" alt="Pas Foto" class="w-9 h-11 object-cover rounded border border-slate-300 hidden shrink-0" />
+              </div>
+            </div>
           </div>
           <div>
-            <label class="block text-xs font-semibold text-slate-700 mb-1">Status Seleksi</label>
-            <select id="editPendaftarStatus" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white">
-              <option value="Pending">Pending</option>
-              <option value="Diverifikasi">Diverifikasi</option>
-              <option value="Diterima">Diterima</option>
-              <option value="Ditolak">Ditolak</option>
-            </select>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">Catatan Panitia SPMB</label>
+            <textarea id="editPendaftarCatatan" rows="2" placeholder="Contoh: Berkas fisik telah diverifikasi lengkap." class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white"></textarea>
           </div>
         </div>
 
-        <div>
-          <label class="block text-xs font-semibold text-slate-700 mb-1">Pilihan Jurusan</label>
-          <select id="editPendaftarJurusan" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white"></select>
-        </div>
+        <!-- Seluruh Data Formulir Dinamis Peserta -->
+        <div id="editPendaftarDynamicFieldsContainer" class="space-y-5"></div>
 
-        <div>
-          <label class="block text-xs font-semibold text-slate-700 mb-1">Catatan Panitia SPMB</label>
-          <textarea id="editPendaftarCatatan" rows="2" placeholder="Contoh: Berkas fisik telah diverifikasi lengkap." class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300"></textarea>
-        </div>
-
-        <div class="pt-2 flex justify-end gap-2">
-          <button type="button" onclick="closeEditPendaftarModal()" class="px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded-lg">Batal</button>
-          <button type="submit" class="px-4 py-2 text-xs font-bold text-white bg-primary-800 hover:bg-primary-900 rounded-lg">Simpan Perubahan</button>
+        <div class="pt-3 border-t border-slate-100 flex justify-end gap-2 sticky bottom-0 bg-white pb-1">
+          <button type="button" onclick="closeEditPendaftarModal()" class="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg">Batal</button>
+          <button type="submit" id="btnSaveEditPendaftar" class="px-5 py-2 text-xs font-bold text-white bg-primary-800 hover:bg-primary-900 rounded-lg shadow">Simpan Perubahan Data</button>
         </div>
       </form>
     </div>
@@ -1628,6 +1858,107 @@
           </button>
           <pre id="supabaseSqlCodeBlock" class="p-4 bg-slate-900 text-emerald-400 rounded-xl text-xs font-mono overflow-x-auto leading-relaxed border border-slate-800 max-h-96"></pre>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 15. MODAL TAMBAH / EDIT AKUN BAYANGAN -->
+  <div id="modalShadowAccountForm" class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+        <h3 id="modalShadowAccountTitle" class="font-bold text-slate-900 text-base">Tambah Akun Bayangan</h3>
+        <button type="button" onclick="closeShadowAccountModal()" class="text-slate-400 hover:text-slate-700 p-1">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+        </button>
+      </div>
+
+      <form onsubmit="handleSaveShadowAccount(event)" class="space-y-4">
+        <input type="hidden" id="shadowFormId" />
+
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1">Nama Petugas <span class="text-rose-500">*</span></label>
+          <input type="text" id="shadowFormNama" required placeholder="Contoh: Petugas Verifikasi 1" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300" />
+        </div>
+
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1">Username Login <span class="text-rose-500">*</span></label>
+          <input type="text" id="shadowFormUsername" required autocomplete="off" placeholder="Contoh: petugas1" class="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-300" />
+        </div>
+
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1">Password <span class="text-rose-500">*</span></label>
+          <div class="relative">
+            <input type="password" id="shadowFormPassword" required autocomplete="new-password" placeholder="Minimal 4 karakter" class="w-full pl-3 pr-10 py-2 text-xs rounded-lg border border-slate-300" />
+            <button type="button" onclick="togglePasswordVisibility('shadowFormPassword')" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1">Status Akun</label>
+          <select id="shadowFormAktif" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white">
+            <option value="true">Aktif (Dapat Login)</option>
+            <option value="false">Nonaktif (Ditangguhkan)</option>
+          </select>
+        </div>
+
+        <div class="p-3 rounded-lg bg-primary-50 border border-primary-100 text-[11px] text-primary-900">
+          Hak akses akun bayangan otomatis dibatasi <strong>hanya untuk menu Kelola Pendaftar dan Ubah Data Pendaftar saja</strong>.
+        </div>
+
+        <div class="pt-2 flex justify-end gap-2">
+          <button type="button" onclick="closeShadowAccountModal()" class="px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded-lg">Batal</button>
+          <button type="submit" class="px-4 py-2 text-xs font-bold text-white bg-primary-800 hover:bg-primary-900 rounded-lg shadow">Simpan Akun Bayangan</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 16. MODAL KONFIRMASI SINKRONISASI GOOGLE SHEETS -->
+  <div id="modalConfirmGoogleSheetSync" class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200">
+      <div class="w-12 h-12 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto mb-4">
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+      </div>
+      <h3 class="text-base font-bold text-slate-900 text-center mb-2">Konfirmasi Pembaruan Google Sheets</h3>
+      <p id="confirmGoogleSheetSyncMessage" class="text-xs text-slate-600 text-center mb-5 leading-relaxed"></p>
+      <div class="flex items-center gap-2">
+        <button type="button" onclick="closeConfirmGoogleSheetSyncModal()" class="flex-1 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors">
+          Batal
+        </button>
+        <button type="button" id="btnConfirmExecuteGoogleSheetSync" onclick="executeConfirmedGoogleSheetSync()" class="flex-1 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow">
+          Ya, Sinkronkan Sekarang
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 17. MODAL CETAK / PDF REKAPAN HASIL PENDAFTARAN (A4 LANDSCAPE) -->
+  <div id="modalPrintRekap" class="fixed inset-0 z-50 bg-slate-900/75 backdrop-blur-sm hidden flex flex-col p-3 sm:p-5 overflow-y-auto">
+    <div class="bg-white rounded-2xl max-w-[1200px] w-full mx-auto shadow-2xl border border-slate-200 overflow-hidden flex flex-col">
+      <div class="no-print px-6 py-3.5 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-3">
+        <div class="flex items-center gap-2">
+          <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+          <span class="font-bold text-sm">Pratinjau Cetak Rekapan Hasil Pendaftaran (A4 Landscape)</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button type="button" id="btnDownloadRekapPdf" onclick="downloadRekapPDF()" class="px-3.5 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+            <span>Simpan PDF</span>
+          </button>
+          <button type="button" onclick="printRekapNow()" class="px-3.5 py-1.5 text-xs font-bold text-slate-900 bg-white hover:bg-slate-100 rounded-lg flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path></svg>
+            <span>Cetak Langsung</span>
+          </button>
+          <button type="button" onclick="closePrintRekapModal()" class="p-1.5 text-slate-400 hover:text-white rounded-lg">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="p-4 sm:p-6 overflow-x-auto bg-slate-100">
+        <div id="rekapPrintArea" class="bg-white p-6 rounded shadow-sm text-slate-900 mx-auto" style="min-width: 960px;"></div>
       </div>
     </div>
   </div>

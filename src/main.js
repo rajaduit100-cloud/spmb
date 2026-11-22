@@ -3,6 +3,17 @@
  * Pure ES6+ Vanilla JavaScript with Complete Dynamic Form Builder,
  * Precise 1-Page A4 Micro-Table Layout, and Supabase DDL SQL Generator.
  */
+import {
+  initGoogleSheetsAuth,
+  googleSheetsSignIn,
+  googleSheetsSignOut,
+  getGoogleAuthState,
+  extractSpreadsheetId,
+  buildRekapDataset,
+  exportRekapToXlsx,
+  createGoogleSpreadsheet,
+  writeAndFormatGoogleSheet
+} from './rekap-sheets.js';
 
 // ================= 1. SUPABASE CLIENT & CONFIGURATION =================
 const SUPABASE_URL = 'https://ttxjmrpnanfunegquefr.supabase.co';
@@ -44,7 +55,9 @@ const STORAGE_KEYS = {
   SETTINGS: 'spmb_data_settings_v4',
   BANNERS: 'spmb_data_banners_v4',
   JURUSAN: 'spmb_data_jurusan_v4',
-  FORM_FIELDS: 'spmb_data_form_fields_v4'
+  FORM_FIELDS: 'spmb_data_form_fields_v4',
+  SHADOW_ACCOUNTS: 'spmb_data_shadow_accounts_v4',
+  GOOGLE_SHEET_CONFIG: 'spmb_google_sheet_config_v1'
 };
 
 const DEFAULT_SETTINGS = {
@@ -327,7 +340,57 @@ function getLocalData(key, fallback) {
 function setLocalData(key, val) {
   try {
     localStorage.setItem(key, JSON.stringify(val));
-  } catch (e) {}
+  } catch (e) {
+    console.warn('localStorage save warning:', key, e);
+  }
+}
+
+function escapeHtml(str) {
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function compressImageFile(file, maxWidth = 1280, quality = 0.8, mimeType = 'image/jpeg') {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Gagal membaca file gambar.'));
+    reader.onload = function(e) {
+      const dataUrl = e.target.result;
+      const img = new Image();
+      img.onerror = () => resolve(dataUrl);
+      img.onload = function() {
+        try {
+          let w = img.width;
+          let h = img.height;
+          if (w > maxWidth || h > maxWidth) {
+            const ratio = Math.min(maxWidth / w, maxWidth / h);
+            w = Math.round(w * ratio);
+            h = Math.round(h * ratio);
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return resolve(dataUrl);
+          if (mimeType === 'image/jpeg') {
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, w, h);
+          }
+          ctx.drawImage(img, 0, 0, w, h);
+          const compressed = canvas.toDataURL(mimeType, quality);
+          resolve(compressed && compressed.length < dataUrl.length ? compressed : dataUrl);
+        } catch (err) {
+          resolve(dataUrl);
+        }
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 let appState = {
@@ -338,12 +401,17 @@ let appState = {
   gelombang: getLocalData(STORAGE_KEYS.GELOMBANG, DEFAULT_GELOMBANG),
   pengumuman: getLocalData(STORAGE_KEYS.PENGUMUMAN, DEFAULT_PENGUMUMAN),
   pendaftar: getLocalData(STORAGE_KEYS.PENDAFTAR, DEFAULT_PENDAFTAR),
+  shadowAccounts: getLocalData(STORAGE_KEYS.SHADOW_ACCOUNTS, []),
+  googleSheetConfig: getLocalData(STORAGE_KEYS.GOOGLE_SHEET_CONFIG, { spreadsheetId: '', spreadsheetUrl: '', title: '', lastSyncedAt: '' }),
   currentSlideIndex: 0,
   sliderTimer: null,
   activeAdminTab: 'pendaftar',
   tempStudentPhoto: null,
+  tempEditStudentPhoto: null,
   tempBannerPhoto: null,
   tempJurusanPhoto: null,
+  pendingBannerPhotoPromise: null,
+  pendingEditStudentPhotoPromise: null,
   lastRegisteredStudent: null
 };
 
@@ -351,6 +419,7 @@ let appState = {
 let isRealtimeSubscribed = false;
 let realtimeChannel = null;
 let localBroadcastChannel = null;
+let activeCloudWrites = 0;
 const CLIENT_TAB_ID = 'tab-' + Math.random().toString(36).slice(2, 10);
 
 try {
@@ -412,6 +481,7 @@ async function seedInitialCloudDataIfEmpty(client) {
 async function syncAllFromSupabase(isInitial = false) {
   const client = getSupabaseClient();
   if (!client) return;
+  if (!isInitial && activeCloudWrites > 0) return;
 
   try {
     const [setRes, jurRes, gelRes, annRes, formRes, pndRes, banRes] = await Promise.all([
@@ -424,8 +494,11 @@ async function syncAllFromSupabase(isInitial = false) {
       client.from('banners').select('*').order('urutan', { ascending: true })
     ]);
 
+    if (!isInitial && activeCloudWrites > 0) return;
+
     // If cloud DB is completely unseeded on first run, populate initial defaults once
-    if (isInitial && !setRes.error && (!setRes.data || setRes.data.length === 0)) {
+    const hasMainSettingsRow = !!(setRes.data && setRes.data.some(r => r.id === 'default' || (r.nama_sekolah !== '__SHADOW_ACCOUNTS__' && r.nama_sekolah !== '__GOOGLE_SHEET_CONFIG__')));
+    if (isInitial && !setRes.error && !hasMainSettingsRow) {
       await seedInitialCloudDataIfEmpty(client);
       return syncAllFromSupabase(false);
     }
@@ -433,11 +506,39 @@ async function syncAllFromSupabase(isInitial = false) {
     let hasChanges = false;
 
     if (!setRes.error && setRes.data && setRes.data.length > 0) {
-      const nextSettings = { ...appState.settings, ...setRes.data[0] };
-      if (JSON.stringify(nextSettings) !== JSON.stringify(appState.settings)) {
-        appState.settings = nextSettings;
-        setLocalData(STORAGE_KEYS.SETTINGS, appState.settings);
-        hasChanges = true;
+      const defaultRow = setRes.data.find(r => r.id === 'default') || setRes.data.find(r => r.nama_sekolah !== '__SHADOW_ACCOUNTS__' && r.nama_sekolah !== '__GOOGLE_SHEET_CONFIG__');
+      if (defaultRow) {
+        const nextSettings = { ...appState.settings, ...defaultRow };
+        if (JSON.stringify(nextSettings) !== JSON.stringify(appState.settings)) {
+          appState.settings = nextSettings;
+          setLocalData(STORAGE_KEYS.SETTINGS, appState.settings);
+          hasChanges = true;
+        }
+      }
+
+      const shadowRow = setRes.data.find(r => r.id === 'shadow_accounts' || r.nama_sekolah === '__SHADOW_ACCOUNTS__');
+      if (shadowRow && shadowRow.alamat) {
+        try {
+          const parsedShadow = JSON.parse(shadowRow.alamat);
+          if (Array.isArray(parsedShadow) && JSON.stringify(parsedShadow) !== JSON.stringify(appState.shadowAccounts)) {
+            appState.shadowAccounts = parsedShadow;
+            setLocalData(STORAGE_KEYS.SHADOW_ACCOUNTS, appState.shadowAccounts);
+            validateCurrentShadowSession();
+            hasChanges = true;
+          }
+        } catch (e) {}
+      }
+
+      const googleSheetRow = setRes.data.find(r => r.id === 'google_sheet_config' || r.nama_sekolah === '__GOOGLE_SHEET_CONFIG__');
+      if (googleSheetRow && googleSheetRow.alamat) {
+        try {
+          const parsedSheet = JSON.parse(googleSheetRow.alamat);
+          if (parsedSheet && typeof parsedSheet === 'object' && JSON.stringify(parsedSheet) !== JSON.stringify(appState.googleSheetConfig)) {
+            appState.googleSheetConfig = parsedSheet;
+            setLocalData(STORAGE_KEYS.GOOGLE_SHEET_CONFIG, appState.googleSheetConfig);
+            hasChanges = true;
+          }
+        } catch (e) {}
       }
     }
 
@@ -486,8 +587,9 @@ async function syncAllFromSupabase(isInitial = false) {
     }
 
     if (!banRes.error && banRes.data && banRes.data.length > 0) {
-      if (JSON.stringify(banRes.data) !== JSON.stringify(appState.banners)) {
-        appState.banners = banRes.data;
+      const sortedBanners = [...banRes.data].sort((a, b) => (a.urutan || 1) - (b.urutan || 1));
+      if (JSON.stringify(sortedBanners) !== JSON.stringify(appState.banners)) {
+        appState.banners = sortedBanners;
         setLocalData(STORAGE_KEYS.BANNERS, appState.banners);
         hasChanges = true;
       }
@@ -548,7 +650,7 @@ function applyInstantBroadcastEvent(msg) {
   else if (entity === 'gelombang') handleRealtimeGelombang(synthPayload);
   else if (entity === 'pengumuman') handleRealtimePengumuman(synthPayload);
   else if (entity === 'form_fields') handleRealtimeFormFields(synthPayload);
-  else if (entity === 'settings') handleRealtimeSettings({ new: record });
+  else if (entity === 'settings' || entity === 'shadow_accounts') handleRealtimeSettings({ new: record });
   else if (entity === 'banners') handleRealtimeBanners(synthPayload);
 }
 
@@ -731,11 +833,36 @@ function handleRealtimeFormFields(payload) {
 
 function handleRealtimeSettings(payload) {
   const { new: newRec } = payload;
-  if (newRec) {
-    appState.settings = { ...appState.settings, ...newRec };
-    setLocalData(STORAGE_KEYS.SETTINGS, appState.settings);
-    renderSchoolSettingsUI();
+  if (!newRec) return;
+
+  if (newRec.id === 'shadow_accounts' || newRec.nama_sekolah === '__SHADOW_ACCOUNTS__') {
+    try {
+      const parsed = JSON.parse(newRec.alamat || '[]');
+      if (Array.isArray(parsed)) {
+        appState.shadowAccounts = parsed;
+        setLocalData(STORAGE_KEYS.SHADOW_ACCOUNTS, appState.shadowAccounts);
+        validateCurrentShadowSession();
+        if (typeof renderAdminShadowAccountsList === 'function') renderAdminShadowAccountsList();
+      }
+    } catch (e) {}
+    return;
   }
+
+  if (newRec.id === 'google_sheet_config' || newRec.nama_sekolah === '__GOOGLE_SHEET_CONFIG__') {
+    try {
+      const parsed = JSON.parse(newRec.alamat || '{}');
+      if (parsed && typeof parsed === 'object') {
+        appState.googleSheetConfig = parsed;
+        setLocalData(STORAGE_KEYS.GOOGLE_SHEET_CONFIG, appState.googleSheetConfig);
+        if (typeof renderGoogleSheetsPanelUI === 'function') renderGoogleSheetsPanelUI();
+      }
+    } catch (e) {}
+    return;
+  }
+
+  appState.settings = { ...appState.settings, ...newRec };
+  setLocalData(STORAGE_KEYS.SETTINGS, appState.settings);
+  renderSchoolSettingsUI();
 }
 
 function handleRealtimeBanners(payload) {
@@ -751,6 +878,7 @@ function handleRealtimeBanners(payload) {
   } else if (eventType === 'DELETE' && oldRec) {
     appState.banners = appState.banners.filter(b => b.id !== oldRec.id);
   }
+  appState.banners.sort((a, b) => (a.urutan || 1) - (b.urutan || 1));
   setLocalData(STORAGE_KEYS.BANNERS, appState.banners);
   renderHeroSlider();
   renderAdminBannerList();
@@ -1954,10 +2082,96 @@ function getStatusBadgeHtml(status) {
   return '<span class="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-300">PENDING</span>';
 }
 
-// ================= 11. ADMIN AUTHENTICATION =================
+// ================= 11. ADMIN AUTHENTICATION & AKUN BAYANGAN ROLE =================
+function getAdminSession() {
+  return getLocalData(STORAGE_KEYS.ADMIN_SESSION, null);
+}
+
+function isShadowRole() {
+  const session = getAdminSession();
+  return !!(session && session.isLoggedIn && session.role === 'shadow');
+}
+
+function validateCurrentShadowSession() {
+  const session = getAdminSession();
+  if (!session || !session.isLoggedIn || session.role !== 'shadow') return;
+  const activeAccount = appState.shadowAccounts.find(
+    a => a.id === session.accountId && a.aktif !== false
+  );
+  if (!activeAccount) {
+    localStorage.removeItem(STORAGE_KEYS.ADMIN_SESSION);
+    const adminView = document.getElementById('adminView');
+    if (adminView && !adminView.classList.contains('hidden')) {
+      window.showToast('Sesi akun bayangan berakhir karena akun dinonaktifkan atau dihapus Admin.', 'warning');
+      window.switchToPublicView();
+    }
+  }
+}
+
+function applyAdminRolePermissions() {
+  const session = getAdminSession();
+  const shadow = isShadowRole();
+
+  const roleBadge = document.getElementById('adminRoleBadge');
+  if (roleBadge) {
+    if (shadow) {
+      roleBadge.innerText = `Akun Bayangan · ${session?.nama || session?.username || 'Petugas'}`;
+      roleBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-200 border border-amber-400/30';
+    } else {
+      roleBadge.innerText = 'Admin Utama';
+      roleBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-400/30';
+    }
+  }
+
+  const sqlBtn = document.getElementById('btnAdminSqlModal');
+  const blankoBtn = document.getElementById('btnAdminBlanko');
+  const toolbarActions = document.getElementById('adminPendaftarToolbarActions');
+  if (sqlBtn) sqlBtn.classList.toggle('hidden', shadow);
+  if (blankoBtn) {
+    if (shadow) blankoBtn.classList.add('!hidden');
+    else blankoBtn.classList.remove('!hidden');
+  }
+  if (toolbarActions) toolbarActions.classList.toggle('hidden', shadow);
+
+  const restrictedTabs = ['form_builder', 'jurusan', 'gelombang', 'pengumuman', 'pengaturan'];
+  restrictedTabs.forEach(tab => {
+    const btn = document.getElementById(`tabBtn-${tab}`);
+    if (btn) btn.classList.toggle('hidden', shadow);
+    const content = document.getElementById(`tabContent-${tab}`);
+    if (shadow && content) content.classList.add('hidden');
+  });
+
+  if (shadow) {
+    const allowedShadowTabs = ['pendaftar', 'rekap'];
+    if (!allowedShadowTabs.includes(appState.activeAdminTab)) {
+      appState.activeAdminTab = 'pendaftar';
+    }
+    allowedShadowTabs.forEach(t => {
+      const btn = document.getElementById(`tabBtn-${t}`);
+      const content = document.getElementById(`tabContent-${t}`);
+      const isActive = appState.activeAdminTab === t;
+      if (btn) {
+        btn.classList.toggle('bg-primary-800', isActive);
+        btn.classList.toggle('text-white', isActive);
+        btn.classList.toggle('text-slate-600', !isActive);
+        btn.classList.toggle('hover:bg-slate-100', !isActive);
+      }
+      if (content) content.classList.toggle('hidden', !isActive);
+    });
+  }
+}
+
 window.handleAdminNavClick = function() {
-  const session = getLocalData(STORAGE_KEYS.ADMIN_SESSION, null);
+  const session = getAdminSession();
   if (session && session.isLoggedIn) {
+    if (session.role === 'shadow') {
+      const stillValid = appState.shadowAccounts.some(a => a.id === session.accountId && a.aktif !== false);
+      if (!stillValid) {
+        localStorage.removeItem(STORAGE_KEYS.ADMIN_SESSION);
+        openAdminLoginModal();
+        return;
+      }
+    }
     switchToAdminView();
   } else {
     openAdminLoginModal();
@@ -1996,15 +2210,43 @@ window.handleAdminLoginSubmit = function(event) {
     const sessionData = {
       isLoggedIn: true,
       username: 'admin',
+      nama: 'Administrator Utama',
+      role: 'admin',
       loginAt: new Date().toISOString()
     };
     setLocalData(STORAGE_KEYS.ADMIN_SESSION, sessionData);
     closeAdminLoginModal();
     window.showToast('Login Berhasil. Selamat datang di Panel Admin SPMB.', 'success');
     switchToAdminView();
-  } else {
-    window.showToast('Username atau password salah! Akses ditolak.', 'error');
+    return;
   }
+
+  const shadowMatch = appState.shadowAccounts.find(
+    a => (a.username || '').toLowerCase() === username.toLowerCase() && a.password === password
+  );
+
+  if (shadowMatch) {
+    if (shadowMatch.aktif === false) {
+      window.showToast('Akun bayangan ini sedang dinonaktifkan oleh Admin Utama.', 'error');
+      return;
+    }
+    const sessionData = {
+      isLoggedIn: true,
+      username: shadowMatch.username,
+      nama: shadowMatch.nama || shadowMatch.username,
+      accountId: shadowMatch.id,
+      role: 'shadow',
+      loginAt: new Date().toISOString()
+    };
+    setLocalData(STORAGE_KEYS.ADMIN_SESSION, sessionData);
+    appState.activeAdminTab = 'pendaftar';
+    closeAdminLoginModal();
+    window.showToast(`Login Berhasil sebagai Akun Bayangan (${sessionData.nama}).`, 'success');
+    switchToAdminView();
+    return;
+  }
+
+  window.showToast('Username atau password salah! Akses ditolak.', 'error');
 };
 
 window.handleAdminLogout = function() {
@@ -2017,6 +2259,7 @@ function switchToAdminView() {
   document.getElementById('publicView').classList.add('hidden');
   document.getElementById('adminView').classList.remove('hidden');
   window.scrollTo({ top: 0, behavior: 'smooth' });
+  applyAdminRolePermissions();
   renderAdminAll();
 }
 
@@ -2029,8 +2272,12 @@ window.switchToPublicView = function() {
 
 // ================= 12. ADMIN NAVIGATION TABS =================
 window.switchAdminTab = function(tabName) {
+  if (isShadowRole() && tabName !== 'pendaftar' && tabName !== 'rekap') {
+    window.showToast('Akun bayangan hanya memiliki akses ke menu Kelola Pendaftar & Rekapan Hasil Pendaftaran.', 'warning');
+    tabName = 'pendaftar';
+  }
   appState.activeAdminTab = tabName;
-  
+
   document.querySelectorAll('.admin-tab-btn').forEach(btn => {
     btn.classList.remove('bg-primary-800', 'text-white');
     btn.classList.add('text-slate-600', 'hover:bg-slate-100');
@@ -2049,13 +2296,19 @@ window.switchAdminTab = function(tabName) {
 };
 
 function renderAdminAll() {
+  applyAdminRolePermissions();
   renderAdminCounters();
   renderAdminPendaftarTable();
-  renderAdminFormBuilder();
-  renderJurusanAll();
-  renderAdminGelombangTable();
-  renderAdminPengumumanTable();
-  renderAdminBannerList();
+  if (typeof renderAdminRekapTable === 'function') renderAdminRekapTable();
+  if (typeof renderGoogleSheetsPanelUI === 'function') renderGoogleSheetsPanelUI();
+  if (!isShadowRole()) {
+    renderAdminFormBuilder();
+    renderJurusanAll();
+    renderAdminGelombangTable();
+    renderAdminPengumumanTable();
+    renderAdminBannerList();
+    renderAdminShadowAccountsList();
+  }
 }
 
 function renderAdminCounters() {
@@ -2087,6 +2340,7 @@ function renderAdminPendaftarTable() {
   const emptyState = document.getElementById('adminPendaftarEmpty');
   if (!tbody) return;
 
+  const shadow = isShadowRole();
   const searchQuery = (document.getElementById('adminSearchInput')?.value || '').toLowerCase().trim();
   const filterJurusan = document.getElementById('adminFilterJurusan')?.value || '';
   const filterStatus = document.getElementById('adminFilterStatus')?.value || '';
@@ -2150,12 +2404,15 @@ function renderAdminPendaftarTable() {
           <button onclick="openPrintCardModalByKode('${p.kode}')" class="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded" title="Cetak Bukti">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path></svg>
           </button>
-          <button onclick="openEditPendaftarModal('${p.kode}')" class="p-1.5 text-slate-500 hover:text-primary-700 hover:bg-primary-50 rounded" title="Edit Data">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+          <button onclick="openEditPendaftarModal('${p.kode}')" class="px-2 py-1 text-[11px] font-semibold text-primary-800 bg-primary-50 hover:bg-primary-100 border border-primary-200 rounded inline-flex items-center gap-1" title="Ubah Data Peserta">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+            <span>Ubah Data</span>
           </button>
+          ${shadow ? '' : `
           <button onclick="confirmDeletePendaftar('${p.kode}')" class="p-1.5 text-slate-500 hover:text-rose-700 hover:bg-rose-50 rounded" title="Hapus Siswa">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
           </button>
+          `}
         </div>
       </td>
     </tr>
@@ -2195,16 +2452,142 @@ window.handleAdminQuickStatusChange = function(kode, newStatus) {
   }
 };
 
+window.previewEditStudentPhoto = function(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  appState.pendingEditStudentPhotoPromise = compressImageFile(file, 600, 0.82, 'image/jpeg')
+    .then(dataUrl => {
+      appState.tempEditStudentPhoto = dataUrl;
+      const preview = document.getElementById('editPendaftarFotoPreview');
+      if (preview) {
+        preview.src = dataUrl;
+        preview.classList.remove('hidden');
+      }
+      window.showToast('Pas foto peserta siap disimpan.', 'info');
+      return dataUrl;
+    })
+    .catch(() => null);
+};
+
 window.openEditPendaftarModal = function(kode) {
   const student = appState.pendaftar.find(p => p.kode === kode);
   if (!student) return;
 
   document.getElementById('editPendaftarId').value = student.kode;
-  document.getElementById('editPendaftarNama').value = student.nama;
-  document.getElementById('editPendaftarNisn').value = student.nisn || '';
-  document.getElementById('editPendaftarStatus').value = student.status;
-  document.getElementById('editPendaftarJurusan').value = student.jurusan;
+  const kodeDisp = document.getElementById('editPendaftarKodeDisplay');
+  if (kodeDisp) kodeDisp.innerText = student.kode;
+
+  document.getElementById('editPendaftarStatus').value = student.status || 'Pending';
   document.getElementById('editPendaftarCatatan').value = student.catatan || '';
+
+  const fotoInput = document.getElementById('editPendaftarFotoInput');
+  const fotoPrev = document.getElementById('editPendaftarFotoPreview');
+  if (fotoInput) fotoInput.value = '';
+  appState.tempEditStudentPhoto = student.foto_url || '';
+  appState.pendingEditStudentPhotoPromise = null;
+  if (fotoPrev) {
+    if (student.foto_url) {
+      fotoPrev.src = student.foto_url;
+      fotoPrev.classList.remove('hidden');
+    } else {
+      fotoPrev.src = '';
+      fotoPrev.classList.add('hidden');
+    }
+  }
+
+  const dynContainer = document.getElementById('editPendaftarDynamicFieldsContainer');
+  if (dynContainer) {
+    const fData = student.formData || {};
+    const sections = ['jalur', 'siswa', 'ortu', 'tambahan'];
+
+    dynContainer.innerHTML = sections.map(secKey => {
+      const fieldsInSec = appState.formFields.filter(f => f.section === secKey);
+      if (fieldsInSec.length === 0) return '';
+      const secMeta = SECTION_TITLES[secKey];
+
+      const fieldsHtml = fieldsInSec.map(field => {
+        let curVal = fData[field.id];
+        if ((curVal === undefined || curVal === null || curVal === '') && student[field.id] !== undefined) {
+          curVal = student[field.id];
+        }
+        curVal = curVal == null ? '' : String(curVal);
+
+        if (field.type === 'gelombang_select') {
+          const waveNames = appState.gelombang.map(g => g.nama);
+          const hasCurrent = curVal && !waveNames.includes(curVal);
+          return `
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 mb-1">${escapeHtml(field.label)}</label>
+              <select name="edit_field_${escapeHtml(field.id)}" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white">
+                <option value="">-- Pilih Gelombang --</option>
+                ${hasCurrent ? `<option value="${escapeHtml(curVal)}" selected>${escapeHtml(curVal)}</option>` : ''}
+                ${appState.gelombang.map(g => `<option value="${escapeHtml(g.nama)}" ${g.nama === curVal ? 'selected' : ''}>${escapeHtml(g.nama)} (${escapeHtml(g.status)})</option>`).join('')}
+              </select>
+            </div>
+          `;
+        }
+
+        if (field.type === 'jurusan_select') {
+          const jurNames = appState.jurusan.map(j => j.nama);
+          const hasCurrent = curVal && !jurNames.includes(curVal);
+          return `
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 mb-1">${escapeHtml(field.label)}</label>
+              <select name="edit_field_${escapeHtml(field.id)}" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white">
+                <option value="">-- Pilih Program Keahlian --</option>
+                ${hasCurrent ? `<option value="${escapeHtml(curVal)}" selected>${escapeHtml(curVal)}</option>` : ''}
+                ${appState.jurusan.map(j => `<option value="${escapeHtml(j.nama)}" ${j.nama === curVal ? 'selected' : ''}>${escapeHtml(j.nama)}</option>`).join('')}
+              </select>
+            </div>
+          `;
+        }
+
+        if (field.type === 'select') {
+          const opts = (field.options || []).map(o => o.trim()).filter(Boolean);
+          const hasCurrent = curVal && !opts.includes(curVal);
+          return `
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 mb-1">${escapeHtml(field.label)}</label>
+              <select name="edit_field_${escapeHtml(field.id)}" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white">
+                <option value="">-- Pilih --</option>
+                ${hasCurrent ? `<option value="${escapeHtml(curVal)}" selected>${escapeHtml(curVal)}</option>` : ''}
+                ${opts.map(opt => `<option value="${escapeHtml(opt)}" ${opt === curVal ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+              </select>
+            </div>
+          `;
+        }
+
+        if (field.type === 'textarea') {
+          return `
+            <div class="sm:col-span-2">
+              <label class="block text-xs font-semibold text-slate-700 mb-1">${escapeHtml(field.label)}</label>
+              <textarea name="edit_field_${escapeHtml(field.id)}" rows="2" placeholder="${escapeHtml(field.placeholder || '')}" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300">${escapeHtml(curVal)}</textarea>
+            </div>
+          `;
+        }
+
+        const isSpan2 = field.id === 'nama' || field.id === 'asal_sekolah';
+        return `
+          <div class="${isSpan2 ? 'sm:col-span-2' : ''}">
+            <label class="block text-xs font-semibold text-slate-700 mb-1">${escapeHtml(field.label)}</label>
+            <input type="${escapeHtml(field.type || 'text')}" name="edit_field_${escapeHtml(field.id)}" value="${escapeHtml(curVal)}" ${field.maxlength ? `maxlength="${field.maxlength}"` : ''} placeholder="${escapeHtml(field.placeholder || '')}" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 ${field.type === 'tel' || field.id === 'nisn' || field.id === 'nik' ? 'font-mono' : ''}" />
+          </div>
+        `;
+      }).join('');
+
+      return `
+        <div class="p-4 rounded-xl border border-slate-200 bg-white space-y-3">
+          <div class="flex items-center gap-2 pb-2 border-b border-slate-100">
+            <span class="w-5 h-5 rounded-full bg-primary-100 text-primary-800 text-[10px] font-bold flex items-center justify-center">${secMeta.code}</span>
+            <h4 class="text-xs font-bold text-slate-800 uppercase tracking-wider">${secMeta.title}</h4>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            ${fieldsHtml}
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
 
   document.getElementById('modalEditPendaftar').classList.remove('hidden');
 };
@@ -2213,50 +2596,102 @@ window.closeEditPendaftarModal = function() {
   document.getElementById('modalEditPendaftar').classList.add('hidden');
 };
 
-window.handleSaveEditPendaftar = function(event) {
+window.handleSaveEditPendaftar = async function(event) {
   event.preventDefault();
   const kode = document.getElementById('editPendaftarId').value;
   const student = appState.pendaftar.find(p => p.kode === kode);
   if (!student) return;
 
-  student.nama = document.getElementById('editPendaftarNama').value.trim();
-  student.nisn = document.getElementById('editPendaftarNisn').value.trim();
-  student.status = document.getElementById('editPendaftarStatus').value;
-  student.jurusan = document.getElementById('editPendaftarJurusan').value;
-  student.catatan = document.getElementById('editPendaftarCatatan').value.trim();
-
-  if (student.formData) {
-    student.formData.nama = student.nama;
-    student.formData.nisn = student.nisn;
-    student.formData.jurusan = student.jurusan;
+  const saveBtn = document.getElementById('btnSaveEditPendaftar');
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.innerText = 'Menyimpan...';
   }
 
-  setLocalData(STORAGE_KEYS.PENDAFTAR, appState.pendaftar);
-  closeEditPendaftarModal();
-  renderAdminCounters();
-  renderAdminPendaftarTable();
-  window.showToast('Data calon siswa berhasil diperbarui.', 'success');
+  activeCloudWrites++;
+  try {
+    if (appState.pendingEditStudentPhotoPromise) {
+      await appState.pendingEditStudentPhotoPromise;
+      appState.pendingEditStudentPhotoPromise = null;
+    }
 
-  broadcastRealtimeChange('pendaftar', 'UPDATE', {
-    ...student,
-    form_data: student.formData || {}
-  });
-  const client = getSupabaseClient();
-  if (client) {
-    client.from('pendaftar').update({
-      nama: student.nama,
-      nisn: student.nisn,
-      status: student.status,
-      jurusan: student.jurusan,
-      catatan: student.catatan,
-      form_data: student.formData
-    }).eq('id', student.id).then(({ error }) => {
-      if (error) console.warn('Supabase update pendaftar error:', error);
-    }).catch(err => console.warn('Supabase update pendaftar err:', err));
+    const formEl = document.getElementById('formEditPendaftar');
+    const updatedFormData = { ...(student.formData || {}) };
+
+    appState.formFields.forEach(f => {
+      const el = formEl ? formEl.querySelector(`[name="edit_field_${f.id}"]`) : null;
+      if (el) {
+        updatedFormData[f.id] = el.value.trim();
+      }
+    });
+
+    if (!updatedFormData.nama) {
+      window.showToast('Nama calon siswa tidak boleh kosong.', 'warning');
+      return;
+    }
+
+    student.nama = updatedFormData.nama || student.nama;
+    student.nisn = updatedFormData.nisn !== undefined ? updatedFormData.nisn : student.nisn;
+    student.nik = updatedFormData.nik !== undefined ? updatedFormData.nik : student.nik;
+    student.jurusan = updatedFormData.jurusan || student.jurusan;
+    student.gelombang = updatedFormData.gelombang || student.gelombang;
+    student.asal_sekolah = updatedFormData.asal_sekolah !== undefined ? updatedFormData.asal_sekolah : student.asal_sekolah;
+    student.status = document.getElementById('editPendaftarStatus').value;
+    student.catatan = document.getElementById('editPendaftarCatatan').value.trim();
+    student.foto_url = appState.tempEditStudentPhoto !== null ? appState.tempEditStudentPhoto : (student.foto_url || '');
+    student.formData = updatedFormData;
+
+    setLocalData(STORAGE_KEYS.PENDAFTAR, appState.pendaftar);
+    closeEditPendaftarModal();
+    renderAdminCounters();
+    renderAdminPendaftarTable();
+    renderGelombangCards();
+    renderPublicStats();
+    refreshOpenCheckStatusIfVisible();
+
+    const pendaftarPayload = {
+      ...student,
+      form_data: student.formData || {}
+    };
+    broadcastRealtimeChange('pendaftar', 'UPDATE', pendaftarPayload);
+
+    const client = getSupabaseClient();
+    if (client) {
+      const { error } = await client.from('pendaftar').update({
+        nama: student.nama,
+        nisn: student.nisn,
+        nik: student.nik || '',
+        jurusan: student.jurusan,
+        gelombang: student.gelombang,
+        asal_sekolah: student.asal_sekolah || '-',
+        status: student.status,
+        catatan: student.catatan,
+        foto_url: student.foto_url || '',
+        form_data: student.formData
+      }).eq('id', student.id);
+
+      if (error) {
+        console.warn('Supabase update pendaftar error:', error);
+        window.showToast('Data tersimpan lokal, namun gagal sinkron ke cloud: ' + error.message, 'warning');
+        return;
+      }
+    }
+
+    window.showToast('Data lengkap calon siswa berhasil diperbarui.', 'success');
+  } finally {
+    activeCloudWrites = Math.max(0, activeCloudWrites - 1);
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.innerText = 'Simpan Perubahan Data';
+    }
   }
 };
 
 window.confirmDeletePendaftar = function(kode) {
+  if (isShadowRole()) {
+    window.showToast('Akun bayangan tidak memiliki izin menghapus data pendaftar.', 'warning');
+    return;
+  }
   const student = appState.pendaftar.find(p => p.kode === kode);
   if (!student) return;
 
@@ -2280,6 +2715,7 @@ window.confirmDeletePendaftar = function(kode) {
 };
 
 window.openAddPendaftarModal = function() {
+  if (isShadowRole()) return;
   window.scrollTo({ top: 0, behavior: 'smooth' });
   switchToPublicView();
   setTimeout(() => {
@@ -2288,6 +2724,7 @@ window.openAddPendaftarModal = function() {
 };
 
 window.exportPendaftarToCSV = function() {
+  if (isShadowRole()) return;
   const data = appState.pendaftar;
   if (data.length === 0) {
     window.showToast('Tidak ada data pendaftar untuk diekspor.', 'warning');
@@ -2876,19 +3313,22 @@ window.closePengumumanModal = function() {
 };
 
 // ================= 15. ADMIN: HERO BANNER CRUD =================
+function getOrderedActiveBanners() {
+  const sorted = [...appState.banners].sort((a, b) => (a.urutan || 1) - (b.urutan || 1));
+  const active = sorted.filter(b => b.status === 'Aktif');
+  if (active.length > 0) return active;
+  if (sorted.length > 0) return [sorted[0]];
+  return [DEFAULT_BANNERS[0]];
+}
+
 function renderHeroSlider() {
   const container = document.getElementById('heroSliderContainer');
   const indicators = document.getElementById('sliderIndicators');
   if (!container || !indicators) return;
 
-  const activeBanners = appState.banners.filter(b => b.status === 'Aktif');
-  if (activeBanners.length === 0 && appState.banners.length > 0) {
-    activeBanners.push(appState.banners[0]);
-  } else if (activeBanners.length === 0) {
-    activeBanners.push(DEFAULT_BANNERS[0]);
-  }
+  const activeBanners = getOrderedActiveBanners();
 
-  if (appState.currentSlideIndex >= activeBanners.length) {
+  if (appState.currentSlideIndex >= activeBanners.length || appState.currentSlideIndex < 0) {
     appState.currentSlideIndex = 0;
   }
 
@@ -2896,7 +3336,7 @@ function renderHeroSlider() {
     const isCurrent = idx === appState.currentSlideIndex;
     return `
       <div class="absolute inset-0 transition-opacity duration-700 ease-in-out ${isCurrent ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'}">
-        <img src="${banner.image_url}" alt="${banner.judul}" class="w-full h-full object-cover brightness-[0.45] select-none" />
+        <img src="${escapeHtml(banner.image_url)}" alt="${escapeHtml(banner.judul)}" class="w-full h-full object-cover brightness-[0.45] select-none" />
         <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-900/60 to-transparent flex items-center">
           <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 w-full py-12">
             <div class="max-w-3xl">
@@ -2906,10 +3346,10 @@ function renderHeroSlider() {
                 <span>TAHUN PELAJARAN 2026/2027</span>
               </div>
               <h1 class="text-3xl sm:text-4xl lg:text-5xl font-extrabold font-display text-white tracking-tight leading-tight sm:leading-snug mb-4">
-                ${banner.judul}
+                ${escapeHtml(banner.judul)}
               </h1>
               <p class="text-slate-200 text-sm sm:text-base leading-relaxed mb-8 max-w-2xl font-light">
-                ${banner.deskripsi}
+                ${escapeHtml(banner.deskripsi)}
               </p>
               <div class="flex flex-wrap items-center gap-3">
                 <a href="#pendaftaran" class="px-6 py-3 text-xs sm:text-sm font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-lg transition-all flex items-center gap-2">
@@ -2943,14 +3383,14 @@ function startSliderAutoPlay() {
 }
 
 window.nextSlide = function() {
-  const activeBanners = appState.banners.filter(b => b.status === 'Aktif');
+  const activeBanners = getOrderedActiveBanners();
   if (activeBanners.length === 0) return;
   appState.currentSlideIndex = (appState.currentSlideIndex + 1) % activeBanners.length;
   renderHeroSlider();
 };
 
 window.prevSlide = function() {
-  const activeBanners = appState.banners.filter(b => b.status === 'Aktif');
+  const activeBanners = getOrderedActiveBanners();
   if (activeBanners.length === 0) return;
   appState.currentSlideIndex = (appState.currentSlideIndex - 1 + activeBanners.length) % activeBanners.length;
   renderHeroSlider();
@@ -2965,16 +3405,18 @@ function renderAdminBannerList() {
   const container = document.getElementById('adminBannerListContainer');
   if (!container) return;
 
-  container.innerHTML = appState.banners.map((b, idx) => `
+  const sorted = [...appState.banners].sort((a, b) => (a.urutan || 1) - (b.urutan || 1));
+
+  container.innerHTML = sorted.map((b, idx) => `
     <div class="flex flex-col sm:flex-row sm:items-center gap-4 p-4 rounded-xl border border-slate-200 bg-slate-50 hover:bg-white transition-all">
-      <img src="${b.image_url}" alt="${b.judul}" class="w-full sm:w-28 h-20 object-cover rounded-lg border border-slate-200 shrink-0" />
+      <img src="${escapeHtml(b.image_url)}" alt="${escapeHtml(b.judul)}" class="w-full sm:w-28 h-20 object-cover rounded-lg border border-slate-200 shrink-0" />
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2 mb-1">
           <span class="text-[10px] font-mono text-slate-400">Slide #${idx + 1}</span>
-          <span class="px-2 py-0.5 rounded text-[10px] font-bold ${b.status === 'Aktif' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-700'}">${b.status}</span>
+          <span class="px-2 py-0.5 rounded text-[10px] font-bold ${b.status === 'Aktif' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-700'}">${escapeHtml(b.status)}</span>
         </div>
-        <h4 class="font-bold text-slate-900 text-sm truncate">${b.judul}</h4>
-        <p class="text-xs text-slate-500 line-clamp-2">${b.deskripsi}</p>
+        <h4 class="font-bold text-slate-900 text-sm truncate">${escapeHtml(b.judul)}</h4>
+        <p class="text-xs text-slate-500 line-clamp-2">${escapeHtml(b.deskripsi)}</p>
       </div>
       <div class="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
         <button onclick="toggleBannerStatus('${b.id}')" class="px-2.5 py-1.5 text-xs font-semibold rounded border ${b.status === 'Aktif' ? 'text-amber-800 bg-amber-50 border-amber-200' : 'text-emerald-800 bg-emerald-50 border-emerald-200'}">
@@ -3003,6 +3445,7 @@ window.openAddBannerModal = function() {
   preview.classList.add('hidden');
   preview.src = '';
   appState.tempBannerPhoto = null;
+  appState.pendingBannerPhotoPromise = null;
   document.getElementById('modalBannerForm').classList.remove('hidden');
 };
 
@@ -3020,6 +3463,7 @@ window.openEditBannerModal = function(id) {
   preview.src = b.image_url;
   preview.classList.remove('hidden');
   appState.tempBannerPhoto = b.image_url;
+  appState.pendingBannerPhotoPromise = null;
   document.getElementById('modalBannerForm').classList.remove('hidden');
 };
 
@@ -3031,62 +3475,100 @@ window.previewBannerPhoto = function(event) {
   const file = event.target.files[0];
   if (!file) return;
 
-  const reader = new FileReader();
-  reader.onload = function(e) {
-    appState.tempBannerPhoto = e.target.result;
-    const preview = document.getElementById('bannerFotoPreview');
-    preview.src = e.target.result;
-    preview.classList.remove('hidden');
-    window.showToast('Foto banner berhasil dipilih.', 'info');
-  };
-  reader.readAsDataURL(file);
+  appState.pendingBannerPhotoPromise = compressImageFile(file, 1280, 0.8, 'image/jpeg')
+    .then(dataUrl => {
+      appState.tempBannerPhoto = dataUrl;
+      const preview = document.getElementById('bannerFotoPreview');
+      if (preview) {
+        preview.src = dataUrl;
+        preview.classList.remove('hidden');
+      }
+      window.showToast('Foto banner siap disimpan.', 'info');
+      return dataUrl;
+    })
+    .catch(() => {
+      window.showToast('Gagal memproses file foto banner.', 'error');
+      return null;
+    });
 };
 
-window.handleSaveBanner = function(event) {
+window.handleSaveBanner = async function(event) {
   event.preventDefault();
-  const id = document.getElementById('bannerFormId').value || ('ban-' + Date.now());
-  const judul = document.getElementById('bannerFormJudul').value.trim();
-  const deskripsi = document.getElementById('bannerFormDeskripsi').value.trim();
-  const status = document.getElementById('bannerFormStatus').value;
-
-  let image_url = appState.tempBannerPhoto;
-  if (!image_url) {
-    const existing = appState.banners.find(b => b.id === id);
-    image_url = existing ? existing.image_url : '/src/assets/images/hero_campus_smk_1794320504766.jpg';
+  const modal = document.getElementById('modalBannerForm');
+  const submitBtn = modal ? modal.querySelector('button[type="submit"]') : null;
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerText = 'Menyimpan Banner...';
   }
 
-  const newBanner = {
-    id,
-    judul,
-    deskripsi,
-    image_url,
-    status,
-    urutan: appState.banners.length + 1
-  };
+  activeCloudWrites++;
+  try {
+    if (appState.pendingBannerPhotoPromise) {
+      await appState.pendingBannerPhotoPromise;
+      appState.pendingBannerPhotoPromise = null;
+    }
 
-  const existingIdx = appState.banners.findIndex(b => b.id === id);
-  if (existingIdx !== -1) {
-    appState.banners[existingIdx] = newBanner;
-  } else {
-    appState.banners.push(newBanner);
-  }
+    const id = document.getElementById('bannerFormId').value || ('ban-' + Date.now());
+    const judul = document.getElementById('bannerFormJudul').value.trim();
+    const deskripsi = document.getElementById('bannerFormDeskripsi').value.trim();
+    const status = document.getElementById('bannerFormStatus').value;
 
-  setLocalData(STORAGE_KEYS.BANNERS, appState.banners);
-  closeBannerModal();
-  renderHeroSlider();
-  renderAdminBannerList();
-  window.showToast('Banner promosi berhasil disimpan.', 'success');
+    const existingIdx = appState.banners.findIndex(b => b.id === id);
+    const existing = existingIdx !== -1 ? appState.banners[existingIdx] : null;
 
-  broadcastRealtimeChange('banners', existingIdx !== -1 ? 'UPDATE' : 'INSERT', newBanner);
-  const client = getSupabaseClient();
-  if (client) {
-    client.from('banners').upsert([newBanner]).then(({ error }) => {
-      if (error) console.warn('Supabase upsert banner warning:', error);
-    }).catch(err => console.warn('Supabase upsert banner err:', err));
+    let image_url = appState.tempBannerPhoto;
+    if (!image_url) {
+      image_url = existing ? existing.image_url : '/src/assets/images/hero_campus_smk_1794320504766.jpg';
+    }
+
+    const newBanner = {
+      id,
+      judul,
+      deskripsi,
+      image_url,
+      status,
+      urutan: existing ? (existing.urutan || existingIdx + 1) : (appState.banners.reduce((m, b) => Math.max(m, b.urutan || 0), 0) + 1)
+    };
+
+    if (existingIdx !== -1) {
+      appState.banners[existingIdx] = newBanner;
+    } else {
+      appState.banners.push(newBanner);
+    }
+    appState.banners.sort((a, b) => (a.urutan || 1) - (b.urutan || 1));
+
+    if (newBanner.status === 'Aktif') {
+      const activeList = getOrderedActiveBanners();
+      const slidePos = activeList.findIndex(b => b.id === newBanner.id);
+      if (slidePos !== -1) appState.currentSlideIndex = slidePos;
+    }
+
+    setLocalData(STORAGE_KEYS.BANNERS, appState.banners);
+    closeBannerModal();
+    renderHeroSlider();
+    renderAdminBannerList();
+
+    broadcastRealtimeChange('banners', existingIdx !== -1 ? 'UPDATE' : 'INSERT', newBanner);
+    const client = getSupabaseClient();
+    if (client) {
+      const { error } = await client.from('banners').upsert([newBanner], { onConflict: 'id' });
+      if (error) {
+        console.warn('Supabase upsert banner error:', error);
+        window.showToast('Banner tersimpan di tampilan lokal, namun gagal sinkron ke server: ' + error.message, 'warning');
+        return;
+      }
+    }
+    window.showToast('Banner promosi berhasil disimpan dan tampil di publik.', 'success');
+  } finally {
+    activeCloudWrites = Math.max(0, activeCloudWrites - 1);
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerText = 'Simpan Banner';
+    }
   }
 };
 
-window.toggleBannerStatus = function(id) {
+window.toggleBannerStatus = async function(id) {
   const b = appState.banners.find(item => item.id === id);
   if (!b) return;
   b.status = b.status === 'Aktif' ? 'Nonaktif' : 'Aktif';
@@ -3098,9 +3580,13 @@ window.toggleBannerStatus = function(id) {
   broadcastRealtimeChange('banners', 'UPDATE', b);
   const client = getSupabaseClient();
   if (client) {
-    client.from('banners').update({ status: b.status }).eq('id', id).then(({ error }) => {
+    activeCloudWrites++;
+    try {
+      const { error } = await client.from('banners').upsert([b], { onConflict: 'id' });
       if (error) console.warn('Supabase update banner status warning:', error);
-    }).catch(err => console.warn('Supabase update banner status err:', err));
+    } finally {
+      activeCloudWrites = Math.max(0, activeCloudWrites - 1);
+    }
   }
 };
 
@@ -3110,7 +3596,7 @@ window.confirmDeleteBanner = function(id) {
     return;
   }
   const banner = appState.banners.find(b => b.id === id);
-  requestConfirmDelete(`Hapus banner promosi "${banner ? banner.judul : 'ini'}"?`, () => {
+  requestConfirmDelete(`Hapus banner promosi "${banner ? banner.judul : 'ini'}"?`, async () => {
     appState.banners = appState.banners.filter(b => b.id !== id);
     setLocalData(STORAGE_KEYS.BANNERS, appState.banners);
     renderHeroSlider();
@@ -3120,10 +3606,193 @@ window.confirmDeleteBanner = function(id) {
     broadcastRealtimeChange('banners', 'DELETE', { id });
     const client = getSupabaseClient();
     if (client) {
-      client.from('banners').delete().eq('id', id).then(({ error }) => {
+      activeCloudWrites++;
+      try {
+        const { error } = await client.from('banners').delete().eq('id', id);
         if (error) console.warn('Supabase delete banner warning:', error);
-      }).catch(err => console.warn('Supabase delete banner err:', err));
+      } finally {
+        activeCloudWrites = Math.max(0, activeCloudWrites - 1);
+      }
     }
+  });
+};
+
+// ================= 15B. ADMIN: AKUN BAYANGAN (PETUGAS PENDAFTAR) =================
+async function syncShadowAccountsToCloud() {
+  const rowPayload = {
+    id: 'shadow_accounts',
+    nama_sekolah: '__SHADOW_ACCOUNTS__',
+    slogan: 'shadow_accounts_v1',
+    alamat: JSON.stringify(appState.shadowAccounts),
+    wa: '',
+    email: '',
+    logo_url: '',
+    nama_ketua_panitia: '',
+    nip_ketua_panitia: '',
+    wa_group_url: ''
+  };
+
+  broadcastRealtimeChange('shadow_accounts', 'UPDATE', rowPayload);
+  const client = getSupabaseClient();
+  if (client) {
+    activeCloudWrites++;
+    try {
+      const { error } = await client.from('settings').upsert([rowPayload], { onConflict: 'id' });
+      if (error) {
+        console.warn('Supabase upsert shadow accounts warning:', error);
+      }
+    } finally {
+      activeCloudWrites = Math.max(0, activeCloudWrites - 1);
+    }
+  }
+}
+
+function renderAdminShadowAccountsList() {
+  const container = document.getElementById('adminShadowAccountListContainer');
+  if (!container) return;
+
+  if (!appState.shadowAccounts || appState.shadowAccounts.length === 0) {
+    container.innerHTML = `
+      <div class="p-4 rounded-xl border border-dashed border-slate-200 bg-slate-50 text-center text-xs text-slate-500">
+        Belum ada akun bayangan terdaftar. Klik <strong>Tambah Akun Bayangan</strong> untuk membuat akun petugas khusus Kelola &amp; Ubah Data Pendaftar.
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = appState.shadowAccounts.map(acc => `
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-xl border border-slate-200 bg-slate-50 hover:bg-white transition-all">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="font-bold text-slate-900 text-xs">${escapeHtml(acc.nama)}</span>
+          <span class="px-2 py-0.5 rounded text-[10px] font-bold ${acc.aktif !== false ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-700'}">
+            ${acc.aktif !== false ? 'Aktif' : 'Nonaktif'}
+          </span>
+          <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-primary-50 text-primary-800 border border-primary-200">
+            Khusus Kelola &amp; Ubah Pendaftar
+          </span>
+        </div>
+        <div class="text-[11px] text-slate-500 font-mono mt-1">
+          Username: <strong class="text-slate-800">${escapeHtml(acc.username)}</strong>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+        <button onclick="toggleShadowAccountStatus('${acc.id}')" class="px-2.5 py-1.5 text-xs font-semibold rounded border ${acc.aktif !== false ? 'text-amber-800 bg-amber-50 border-amber-200' : 'text-emerald-800 bg-emerald-50 border-emerald-200'}">
+          ${acc.aktif !== false ? 'Nonaktifkan' : 'Aktifkan'}
+        </button>
+        <button onclick="openEditShadowAccountModal('${acc.id}')" class="px-2.5 py-1.5 text-xs font-semibold text-primary-800 bg-primary-50 border border-primary-200 rounded hover:bg-primary-100 flex items-center gap-1">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+          <span>Ubah</span>
+        </button>
+        <button onclick="confirmDeleteShadowAccount('${acc.id}')" class="p-1.5 text-slate-400 hover:text-rose-600 rounded" title="Hapus Akun Bayangan">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+        </button>
+      </div>
+    </div>
+  `).join('');
+}
+
+window.openAddShadowAccountModal = function() {
+  if (isShadowRole()) return;
+  document.getElementById('shadowFormId').value = '';
+  document.getElementById('modalShadowAccountTitle').innerText = 'Tambah Akun Bayangan';
+  document.getElementById('shadowFormNama').value = '';
+  document.getElementById('shadowFormUsername').value = '';
+  document.getElementById('shadowFormPassword').value = '';
+  document.getElementById('shadowFormAktif').value = 'true';
+  document.getElementById('modalShadowAccountForm').classList.remove('hidden');
+};
+
+window.openEditShadowAccountModal = function(id) {
+  if (isShadowRole()) return;
+  const acc = appState.shadowAccounts.find(a => a.id === id);
+  if (!acc) return;
+
+  document.getElementById('shadowFormId').value = acc.id;
+  document.getElementById('modalShadowAccountTitle').innerText = 'Ubah Akun Bayangan';
+  document.getElementById('shadowFormNama').value = acc.nama || '';
+  document.getElementById('shadowFormUsername').value = acc.username || '';
+  document.getElementById('shadowFormPassword').value = acc.password || '';
+  document.getElementById('shadowFormAktif').value = acc.aktif !== false ? 'true' : 'false';
+  document.getElementById('modalShadowAccountForm').classList.remove('hidden');
+};
+
+window.closeShadowAccountModal = function() {
+  const modal = document.getElementById('modalShadowAccountForm');
+  if (modal) modal.classList.add('hidden');
+};
+
+window.handleSaveShadowAccount = async function(event) {
+  event.preventDefault();
+  if (isShadowRole()) return;
+
+  const id = document.getElementById('shadowFormId').value || ('shd-' + Date.now());
+  const nama = document.getElementById('shadowFormNama').value.trim();
+  const username = document.getElementById('shadowFormUsername').value.trim();
+  const password = document.getElementById('shadowFormPassword').value.trim();
+  const aktif = document.getElementById('shadowFormAktif').value === 'true';
+
+  if (username.toLowerCase() === 'admin') {
+    window.showToast('Username "admin" sudah digunakan untuk Admin Utama.', 'warning');
+    return;
+  }
+  if (password.length < 4) {
+    window.showToast('Password minimal 4 karakter.', 'warning');
+    return;
+  }
+
+  const duplicateUser = appState.shadowAccounts.find(
+    a => (a.username || '').toLowerCase() === username.toLowerCase() && a.id !== id
+  );
+  if (duplicateUser) {
+    window.showToast(`Username "${username}" sudah digunakan akun bayangan lain.`, 'warning');
+    return;
+  }
+
+  const existingIdx = appState.shadowAccounts.findIndex(a => a.id === id);
+  const accountObj = {
+    id,
+    nama,
+    username,
+    password,
+    aktif,
+    created_at: existingIdx !== -1 ? appState.shadowAccounts[existingIdx].created_at : new Date().toISOString()
+  };
+
+  if (existingIdx !== -1) {
+    appState.shadowAccounts[existingIdx] = accountObj;
+  } else {
+    appState.shadowAccounts.unshift(accountObj);
+  }
+
+  setLocalData(STORAGE_KEYS.SHADOW_ACCOUNTS, appState.shadowAccounts);
+  closeShadowAccountModal();
+  renderAdminShadowAccountsList();
+  window.showToast('Akun bayangan berhasil disimpan.', 'success');
+  await syncShadowAccountsToCloud();
+};
+
+window.toggleShadowAccountStatus = async function(id) {
+  if (isShadowRole()) return;
+  const acc = appState.shadowAccounts.find(a => a.id === id);
+  if (!acc) return;
+  acc.aktif = acc.aktif === false;
+  setLocalData(STORAGE_KEYS.SHADOW_ACCOUNTS, appState.shadowAccounts);
+  renderAdminShadowAccountsList();
+  window.showToast(`Akun bayangan "${acc.username}" ${acc.aktif ? 'diaktifkan' : 'dinonaktifkan'}.`, 'info');
+  await syncShadowAccountsToCloud();
+};
+
+window.confirmDeleteShadowAccount = function(id) {
+  if (isShadowRole()) return;
+  const acc = appState.shadowAccounts.find(a => a.id === id);
+  requestConfirmDelete(`Hapus akun bayangan "${acc ? acc.nama : 'ini'}" (${acc ? acc.username : ''})?`, async () => {
+    appState.shadowAccounts = appState.shadowAccounts.filter(a => a.id !== id);
+    setLocalData(STORAGE_KEYS.SHADOW_ACCOUNTS, appState.shadowAccounts);
+    renderAdminShadowAccountsList();
+    window.showToast('Akun bayangan telah dihapus.', 'info');
+    await syncShadowAccountsToCloud();
   });
 };
 
@@ -3268,6 +3937,9 @@ function renderAllViews() {
 }
 
 function initApp() {
+  initGoogleSheetsAuth(() => {
+    if (typeof renderGoogleSheetsPanelUI === 'function') renderGoogleSheetsPanelUI();
+  });
   renderAllViews();
   initSupabaseCloud();
 
@@ -3285,6 +3957,459 @@ function initApp() {
     }
   }
 }
+
+// ================= 18. REKAPAN HASIL PENDAFTARAN, EXCEL (.XLSX), PRINT & GOOGLE SHEETS =================
+function getRekapFilters() {
+  return {
+    search: document.getElementById('rekapSearchInput')?.value || '',
+    jurusan: document.getElementById('rekapFilterJurusan')?.value || '',
+    gelombang: document.getElementById('rekapFilterGelombang')?.value || '',
+    status: document.getElementById('rekapFilterStatus')?.value || ''
+  };
+}
+
+function getCurrentRekapDataset() {
+  return buildRekapDataset(
+    appState.pendaftar,
+    appState.formFields,
+    appState.jurusan,
+    getRekapFilters()
+  );
+}
+
+function populateRekapFilterOptions() {
+  const jurSel = document.getElementById('rekapFilterJurusan');
+  const gelSel = document.getElementById('rekapFilterGelombang');
+  if (jurSel) {
+    const cur = jurSel.value;
+    jurSel.innerHTML = '<option value="">Semua Jurusan</option>' +
+      appState.jurusan.map(j => `<option value="${escapeHtml(j.nama)}">${escapeHtml(j.nama)}</option>`).join('');
+    if (cur) jurSel.value = cur;
+  }
+  if (gelSel) {
+    const cur = gelSel.value;
+    gelSel.innerHTML = '<option value="">Semua Gelombang</option>' +
+      appState.gelombang.map(g => `<option value="${escapeHtml(g.nama)}">${escapeHtml(g.nama)}</option>`).join('');
+    if (cur) gelSel.value = cur;
+  }
+}
+
+window.renderAdminRekapTable = function() {
+  populateRekapFilterOptions();
+  const dataset = getCurrentRekapDataset();
+
+  const badge = document.getElementById('rekapCountSummaryBadge');
+  if (badge) {
+    badge.innerText = `${dataset.rows.length} Peserta (${dataset.headers.length} Kolom)`;
+  }
+
+  // Render Ringkasan Statistik Per Jurusan
+  const summaryBody = document.getElementById('rekapSummaryTableBody');
+  if (summaryBody) {
+    const totals = dataset.summaryRows.reduce(
+      (acc, r) => ({
+        kuota: acc.kuota + (Number(r[3]) || 0),
+        total: acc.total + (Number(r[4]) || 0),
+        diterima: acc.diterima + (Number(r[5]) || 0),
+        verif: acc.verif + (Number(r[6]) || 0),
+        pending: acc.pending + (Number(r[7]) || 0),
+        ditolak: acc.ditolak + (Number(r[8]) || 0),
+        sisa: acc.sisa + (Number(r[9]) || 0)
+      }),
+      { kuota: 0, total: 0, diterima: 0, verif: 0, pending: 0, ditolak: 0, sisa: 0 }
+    );
+
+    summaryBody.innerHTML = dataset.summaryRows.map(r => `
+      <tr class="hover:bg-slate-50">
+        <td class="py-2 px-3 font-mono text-slate-500">${r[0]}</td>
+        <td class="py-2 px-3 font-mono font-bold text-primary-800">${escapeHtml(r[1])}</td>
+        <td class="py-2 px-3 font-semibold text-slate-900">${escapeHtml(r[2])}</td>
+        <td class="py-2 px-3 text-center font-mono">${r[3]}</td>
+        <td class="py-2 px-3 text-center font-mono font-bold text-slate-900">${r[4]}</td>
+        <td class="py-2 px-3 text-center font-mono font-bold text-emerald-700">${r[5]}</td>
+        <td class="py-2 px-3 text-center font-mono font-bold text-primary-700">${r[6]}</td>
+        <td class="py-2 px-3 text-center font-mono font-bold text-amber-700">${r[7]}</td>
+        <td class="py-2 px-3 text-center font-mono font-bold text-rose-700">${r[8]}</td>
+        <td class="py-2 px-3 text-center font-mono text-slate-600">${r[9]}</td>
+      </tr>
+    `).join('') + `
+      <tr class="bg-emerald-50/70 font-bold text-slate-900 border-t-2 border-emerald-200">
+        <td colspan="3" class="py-2.5 px-3 text-right uppercase text-[11px]">Total Keseluruhan</td>
+        <td class="py-2.5 px-3 text-center font-mono">${totals.kuota}</td>
+        <td class="py-2.5 px-3 text-center font-mono">${totals.total}</td>
+        <td class="py-2.5 px-3 text-center font-mono text-emerald-800">${totals.diterima}</td>
+        <td class="py-2.5 px-3 text-center font-mono text-primary-800">${totals.verif}</td>
+        <td class="py-2.5 px-3 text-center font-mono text-amber-800">${totals.pending}</td>
+        <td class="py-2.5 px-3 text-center font-mono text-rose-800">${totals.ditolak}</td>
+        <td class="py-2.5 px-3 text-center font-mono">${totals.sisa}</td>
+      </tr>
+    `;
+  }
+
+  // Render Header & Baris Tabel Rekapan Lengkap
+  const thead = document.getElementById('rekapTableHead');
+  const tbody = document.getElementById('rekapTableBody');
+  const emptyEl = document.getElementById('rekapTableEmpty');
+  if (!thead || !tbody) return;
+
+  thead.innerHTML = `
+    <tr>
+      ${dataset.headers.map((h, i) => `
+        <th class="py-2.5 px-3 text-[11px] whitespace-nowrap border-r border-primary-800/60 ${i === 0 ? 'text-center w-10' : ''}">${escapeHtml(h)}</th>
+      `).join('')}
+    </tr>
+  `;
+
+  if (dataset.rows.length === 0) {
+    tbody.innerHTML = '';
+    if (emptyEl) emptyEl.classList.remove('hidden');
+    return;
+  }
+  if (emptyEl) emptyEl.classList.add('hidden');
+
+  tbody.innerHTML = dataset.rows.map((row, rIdx) => `
+    <tr class="${rIdx % 2 === 1 ? 'bg-slate-50/70' : 'bg-white'} hover:bg-primary-50/40 transition-colors">
+      ${row.map((val, cIdx) => {
+        if (cIdx === dataset.statusColumnIndex) {
+          return `<td class="py-2 px-3 whitespace-nowrap border-r border-slate-100">${getStatusBadgeHtml(val)}</td>`;
+        }
+        return `<td class="py-2 px-3 text-[11px] border-r border-slate-100 ${cIdx <= 1 ? 'font-mono font-semibold text-primary-900 whitespace-nowrap' : 'min-w-[120px] max-w-[260px] break-words'}">${escapeHtml(val)}</td>`;
+      }).join('')}
+    </tr>
+  `).join('');
+};
+
+window.exportRekapToExcelFile = function() {
+  const dataset = getCurrentRekapDataset();
+  if (dataset.rows.length === 0) {
+    window.showToast('Tidak ada data rekapan untuk disimpan ke Excel.', 'warning');
+    return;
+  }
+  exportRekapToXlsx({ dataset, settings: appState.settings });
+  window.showToast('File Excel (.xlsx) rekapan berhasil dibuat dan diunduh.', 'success');
+};
+
+window.openPrintRekapModal = function() {
+  const dataset = getCurrentRekapDataset();
+  if (dataset.rows.length === 0) {
+    window.showToast('Tidak ada data rekapan untuk dicetak.', 'warning');
+    return;
+  }
+
+  const area = document.getElementById('rekapPrintArea');
+  const modal = document.getElementById('modalPrintRekap');
+  if (!area || !modal) return;
+
+  const s = appState.settings || {};
+  const tglCetak = new Date().toLocaleDateString('id-ID', { day: '2-digit', month: 'long', year: 'numeric' });
+
+  area.innerHTML = `
+    <div style="border-bottom: 2px solid #0f172a; padding-bottom: 8px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: flex-end;">
+      <div>
+        <div style="font-size: 13pt; font-weight: 800; color: #0c4a6e;">REKAPAN HASIL PENDAFTARAN CALON SISWA BARU</div>
+        <div style="font-size: 10pt; font-weight: 700; color: #0f172a;">${escapeHtml(s.nama_sekolah || 'SMK Lentera Bangsa 2')} · Tahun Pelajaran 2026/2027</div>
+        <div style="font-size: 8pt; color: #475569;">${escapeHtml(s.alamat || '')}</div>
+      </div>
+      <div style="text-align: right; font-size: 8pt; color: #334155;">
+        <div>Dicetak: <strong>${escapeHtml(tglCetak)}</strong></div>
+        <div>Total Peserta: <strong>${dataset.rows.length} Siswa</strong></div>
+      </div>
+    </div>
+
+    <table style="width: 100%; border-collapse: collapse; font-size: 7pt; margin-bottom: 14px;">
+      <thead>
+        <tr style="background: #065f46; color: #ffffff;">
+          ${dataset.headers.map(h => `<th style="border: 1px solid #475569; padding: 4px 5px; text-align: left; font-weight: 700;">${escapeHtml(h)}</th>`).join('')}
+        </tr>
+      </thead>
+      <tbody>
+        ${dataset.rows.map((r, i) => `
+          <tr style="background: ${i % 2 === 1 ? '#f8fafc' : '#ffffff'};">
+            ${r.map(c => `<td style="border: 1px solid #94a3b8; padding: 3px 4px; vertical-align: top;">${escapeHtml(c)}</td>`).join('')}
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+
+    <div style="display: flex; justify-content: flex-end; margin-top: 12px; font-size: 8pt;">
+      <div style="text-align: center; min-width: 210px;">
+        <div>Karawang, ${escapeHtml(tglCetak)}</div>
+        <div style="font-weight: 700;">Ketua Panitia SPMB</div>
+        <div style="height: 36px;"></div>
+        <div style="font-weight: 700; text-decoration: underline;">${escapeHtml(s.nama_ketua_panitia || 'Drs. H. Mulyadi, M.Pd.')}</div>
+        <div style="font-size: 7.5pt; color: #475569;">${escapeHtml(s.nip_ketua_panitia || '')}</div>
+      </div>
+    </div>
+  `;
+
+  modal.classList.remove('hidden');
+};
+
+window.closePrintRekapModal = function() {
+  const modal = document.getElementById('modalPrintRekap');
+  if (modal) modal.classList.add('hidden');
+};
+
+window.printRekapNow = function() {
+  window.print();
+};
+
+window.downloadRekapPDF = function() {
+  const element = document.getElementById('rekapPrintArea');
+  const btn = document.getElementById('btnDownloadRekapPdf');
+  if (!element) return;
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = 'Menyusun PDF...';
+  }
+
+  const opt = {
+    margin: 6,
+    filename: `Rekapan_SPMB_${new Date().toISOString().split('T')[0]}.pdf`,
+    image: { type: 'jpeg', quality: 0.96 },
+    html2canvas: { scale: 2, useCORS: true, logging: false },
+    jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' }
+  };
+
+  if (window.html2pdf) {
+    window.html2pdf().set(opt).from(element).save().then(() => {
+      window.showToast('PDF Rekapan berhasil diunduh.', 'success');
+      if (btn) {
+        btn.disabled = false;
+        btn.innerText = 'Simpan PDF';
+      }
+    }).catch(() => {
+      window.print();
+      if (btn) {
+        btn.disabled = false;
+        btn.innerText = 'Simpan PDF';
+      }
+    });
+  } else {
+    window.print();
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = 'Simpan PDF';
+    }
+  }
+};
+
+// --- Google Sheets UI & Sync Handlers ---
+async function saveGoogleSheetConfigToCloud(configObj) {
+  appState.googleSheetConfig = configObj;
+  setLocalData(STORAGE_KEYS.GOOGLE_SHEET_CONFIG, configObj);
+  renderGoogleSheetsPanelUI();
+
+  const rowPayload = {
+    id: 'google_sheet_config',
+    nama_sekolah: '__GOOGLE_SHEET_CONFIG__',
+    slogan: 'google_sheet_v1',
+    alamat: JSON.stringify(configObj),
+    wa: '',
+    email: '',
+    logo_url: '',
+    nama_ketua_panitia: '',
+    nip_ketua_panitia: '',
+    wa_group_url: ''
+  };
+  broadcastRealtimeChange('settings', 'UPDATE', rowPayload);
+  const client = getSupabaseClient();
+  if (client) {
+    activeCloudWrites++;
+    try {
+      await client.from('settings').upsert([rowPayload], { onConflict: 'id' });
+    } catch (e) {
+      console.warn('Save google sheet config warning:', e);
+    } finally {
+      activeCloudWrites = Math.max(0, activeCloudWrites - 1);
+    }
+  }
+}
+
+function renderGoogleSheetsPanelUI() {
+  const { user, isConnected } = getGoogleAuthState();
+  const signInBtn = document.getElementById('btnGoogleSheetsSignIn');
+  const connectedBar = document.getElementById('rekapGoogleConnectedBar');
+  const userBadge = document.getElementById('rekapGoogleUserBadge');
+  const statusText = document.getElementById('rekapGoogleStatusText');
+  const sheetInput = document.getElementById('rekapGoogleSheetInput');
+  const sheetLink = document.getElementById('rekapGoogleSheetLink');
+  const syncMeta = document.getElementById('rekapGoogleSyncMeta');
+
+  if (signInBtn) signInBtn.classList.toggle('hidden', isConnected);
+  if (connectedBar) connectedBar.classList.toggle('hidden', !isConnected);
+  if (userBadge && user) {
+    userBadge.innerText = `Terhubung: ${user.email || user.displayName || 'Akun Google'}`;
+  }
+  if (statusText) {
+    statusText.innerText = isConnected
+      ? 'Akun Google terhubung. Anda dapat membuat spreadsheet baru atau memperbarui rekapan langsung ke Google Sheets.'
+      : 'Hubungkan akun Google Anda untuk membuat atau memperbarui rekapan langsung di Google Sheets.';
+  }
+
+  const cfg = appState.googleSheetConfig || {};
+  if (sheetInput && !sheetInput.value && cfg.spreadsheetId) {
+    sheetInput.value = cfg.spreadsheetUrl || cfg.spreadsheetId;
+  }
+  if (sheetLink) {
+    if (cfg.spreadsheetId) {
+      sheetLink.href = cfg.spreadsheetUrl || `https://docs.google.com/spreadsheets/d/${cfg.spreadsheetId}/edit`;
+      sheetLink.classList.remove('hidden');
+    } else {
+      sheetLink.classList.add('hidden');
+    }
+  }
+  if (syncMeta) {
+    syncMeta.innerText = cfg.lastSyncedAt
+      ? `Terakhir disinkronkan: ${new Date(cfg.lastSyncedAt).toLocaleString('id-ID')} (${cfg.title || 'Google Spreadsheet'})`
+      : '';
+  }
+}
+
+window.handleGoogleSheetsSignIn = async function() {
+  const btn = document.getElementById('btnGoogleSheetsSignIn');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await googleSheetsSignIn();
+    renderGoogleSheetsPanelUI();
+    window.showToast(`Terhubung dengan Google (${res.user?.email || 'Berhasil'}).`, 'success');
+  } catch (err) {
+    console.warn('Google Sign-In error:', err);
+    window.showToast(err?.message || 'Gagal masuk dengan Google.', 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+};
+
+window.handleGoogleSheetsSignOut = async function() {
+  try {
+    await googleSheetsSignOut();
+    renderGoogleSheetsPanelUI();
+    window.showToast('Koneksi akun Google telah diputus.', 'info');
+  } catch (err) {
+    window.showToast('Gagal keluar dari Google.', 'warning');
+  }
+};
+
+window.handleCreateNewGoogleSheet = async function() {
+  const { accessToken } = getGoogleAuthState();
+  if (!accessToken) {
+    window.showToast('Silakan klik "Sign in with Google" terlebih dahulu.', 'warning');
+    return;
+  }
+
+  const dataset = getCurrentRekapDataset();
+  const btn = document.getElementById('btnCreateNewGoogleSheet');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = 'Membuat Google Sheet...';
+  }
+
+  try {
+    const res = await createGoogleSpreadsheet({
+      accessToken,
+      settings: appState.settings,
+      dataset
+    });
+    const input = document.getElementById('rekapGoogleSheetInput');
+    if (input) input.value = res.spreadsheetUrl;
+
+    await saveGoogleSheetConfigToCloud({
+      spreadsheetId: res.spreadsheetId,
+      spreadsheetUrl: res.spreadsheetUrl,
+      title: res.title,
+      lastSyncedAt: new Date().toISOString()
+    });
+    window.showToast('Google Sheet baru berhasil dibuat dan diformat rapi!', 'success', 5000);
+  } catch (err) {
+    console.warn('Create Google Sheet error:', err);
+    renderGoogleSheetsPanelUI();
+    window.showToast('Gagal membuat Google Sheet: ' + (err?.message || 'Coba login ulang Google.'), 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = 'Buat Google Sheet Baru';
+    }
+  }
+};
+
+window.requestConfirmSyncGoogleSheet = function() {
+  const { accessToken } = getGoogleAuthState();
+  if (!accessToken) {
+    window.showToast('Silakan klik "Sign in with Google" terlebih dahulu.', 'warning');
+    return;
+  }
+
+  const rawInput = document.getElementById('rekapGoogleSheetInput')?.value || appState.googleSheetConfig?.spreadsheetId || '';
+  const spreadsheetId = extractSpreadsheetId(rawInput);
+  if (!spreadsheetId) {
+    window.showToast('Masukkan URL/ID Google Spreadsheet tujuan atau klik "Buat Google Sheet Baru".', 'warning');
+    return;
+  }
+
+  const dataset = getCurrentRekapDataset();
+  const msgEl = document.getElementById('confirmGoogleSheetSyncMessage');
+  const modal = document.getElementById('modalConfirmGoogleSheetSync');
+  if (msgEl) {
+    msgEl.innerHTML = `Aplikasi akan memperbarui dan memformat ulang tab <strong>Rekapan Pendaftar</strong> dan <strong>Ringkasan Statistik</strong> pada Google Spreadsheet ID <span class="font-mono font-bold text-primary-900">${escapeHtml(spreadsheetId)}</span> dengan <strong>${dataset.rows.length} data pendaftar</strong> (${dataset.headers.length} kolom isian). Isi lama pada kedua tab tersebut akan digantikan dengan data terbaru.`;
+  }
+  if (modal) modal.classList.remove('hidden');
+};
+
+window.closeConfirmGoogleSheetSyncModal = function() {
+  const modal = document.getElementById('modalConfirmGoogleSheetSync');
+  if (modal) modal.classList.add('hidden');
+};
+
+window.executeConfirmedGoogleSheetSync = async function() {
+  closeConfirmGoogleSheetSyncModal();
+  const { accessToken } = getGoogleAuthState();
+  if (!accessToken) {
+    window.showToast('Sesi Google berakhir. Silakan Sign in with Google kembali.', 'warning');
+    renderGoogleSheetsPanelUI();
+    return;
+  }
+
+  const rawInput = document.getElementById('rekapGoogleSheetInput')?.value || appState.googleSheetConfig?.spreadsheetId || '';
+  const spreadsheetId = extractSpreadsheetId(rawInput);
+  if (!spreadsheetId) return;
+
+  const dataset = getCurrentRekapDataset();
+  const btn = document.getElementById('btnSyncGoogleSheet');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = 'Menyinkronkan...';
+  }
+
+  try {
+    const res = await writeAndFormatGoogleSheet({
+      accessToken,
+      spreadsheetId,
+      settings: appState.settings,
+      dataset
+    });
+    const input = document.getElementById('rekapGoogleSheetInput');
+    if (input) input.value = res.spreadsheetUrl;
+
+    await saveGoogleSheetConfigToCloud({
+      spreadsheetId: res.spreadsheetId,
+      spreadsheetUrl: res.spreadsheetUrl,
+      title: res.title,
+      lastSyncedAt: new Date().toISOString()
+    });
+    window.showToast(`Berhasil menyinkronkan ${dataset.rows.length} data ke Google Sheets!`, 'success', 5000);
+  } catch (err) {
+    console.warn('Sync Google Sheet error:', err);
+    renderGoogleSheetsPanelUI();
+    window.showToast('Gagal sinkronisasi Google Sheets: ' + (err?.message || 'Periksa ID Sheet / izin akun.'), 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = 'Sinkronkan ke Google Sheets';
+    }
+  }
+};
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', initApp);
