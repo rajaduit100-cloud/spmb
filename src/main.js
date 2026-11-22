@@ -6,13 +6,27 @@
 
 // ================= 1. SUPABASE CLIENT & CONFIGURATION =================
 const SUPABASE_URL = 'https://ttxjmrpnanfunegquefr.supabase.co';
+const SUPABASE_REST_URL = 'https://ttxjmrpnanfunegquefr.supabase.co/rest/v1/';
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_mg4oJAQdTRXlc8PCby4Evw_rOHowvxi';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR0eGptcnBuYW5mdW5lZ3F1ZWZyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQzMTYwNzEsImV4cCI6MjEwOTg5MjA3MX0.84nwkZgnfOLABqbxp__UnOeWbSL7dQHcsOFfdRYGBS0';
 
 let supabase = null;
 function getSupabaseClient() {
   if (!supabase && window.supabase && typeof window.supabase.createClient === 'function') {
     try {
-      supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        global: {
+          headers: {
+            apikey: SUPABASE_PUBLISHABLE_KEY,
+            'x-supabase-rest-url': SUPABASE_REST_URL
+          }
+        },
+        realtime: {
+          params: {
+            eventsPerSecond: 20
+          }
+        }
+      });
     } catch (err) {
       console.warn('Supabase init error:', err);
     }
@@ -335,74 +349,216 @@ let appState = {
 
 // ================= 2B. SUPABASE REALTIME & CLOUD SYNC =================
 let isRealtimeSubscribed = false;
+let realtimeChannel = null;
+let localBroadcastChannel = null;
+const CLIENT_TAB_ID = 'tab-' + Math.random().toString(36).slice(2, 10);
+
+try {
+  if (typeof BroadcastChannel !== 'undefined') {
+    localBroadcastChannel = new BroadcastChannel('spmb_lentera_bangsa_2_sync');
+    localBroadcastChannel.onmessage = (evt) => {
+      if (evt && evt.data && evt.data.sender !== CLIENT_TAB_ID) {
+        applyInstantBroadcastEvent(evt.data);
+      }
+    };
+  }
+} catch (e) {}
+
+async function seedInitialCloudDataIfEmpty(client) {
+  try {
+    await Promise.all([
+      client.from('settings').upsert([{ id: 'default', ...DEFAULT_SETTINGS }], { onConflict: 'id', ignoreDuplicates: true }),
+      client.from('jurusan').upsert(DEFAULT_JURUSAN, { onConflict: 'id', ignoreDuplicates: true }),
+      client.from('gelombang').upsert(DEFAULT_GELOMBANG, { onConflict: 'id', ignoreDuplicates: true }),
+      client.from('pengumuman').upsert(DEFAULT_PENGUMUMAN, { onConflict: 'id', ignoreDuplicates: true }),
+      client.from('banners').upsert(DEFAULT_BANNERS, { onConflict: 'id', ignoreDuplicates: true }),
+      client.from('form_fields').upsert(
+        DEFAULT_FORM_FIELDS.map((f, idx) => ({
+          id: f.id,
+          section: f.section,
+          label: f.label,
+          type: f.type,
+          required: !!f.required,
+          placeholder: f.placeholder || '',
+          options: f.options || [],
+          sort_order: idx + 1
+        })),
+        { onConflict: 'id', ignoreDuplicates: true }
+      ),
+      client.from('pendaftar').upsert(
+        DEFAULT_PENDAFTAR.map(p => ({
+          id: p.id,
+          kode: p.kode,
+          nama: p.nama,
+          nisn: p.nisn,
+          nik: p.nik,
+          jurusan: p.jurusan,
+          gelombang: p.gelombang,
+          asal_sekolah: p.asal_sekolah || '-',
+          status: p.status,
+          catatan: p.catatan || '',
+          foto_url: p.foto_url || '',
+          form_data: p.formData || {},
+          created_at: p.created_at
+        })),
+        { onConflict: 'id', ignoreDuplicates: true }
+      )
+    ]);
+  } catch (e) {
+    console.warn('Auto-seed notice:', e);
+  }
+}
+
+async function syncAllFromSupabase(isInitial = false) {
+  const client = getSupabaseClient();
+  if (!client) return;
+
+  try {
+    const [setRes, jurRes, gelRes, annRes, formRes, pndRes, banRes] = await Promise.all([
+      client.from('settings').select('*'),
+      client.from('jurusan').select('*'),
+      client.from('gelombang').select('*'),
+      client.from('pengumuman').select('*').order('created_at', { ascending: false }),
+      client.from('form_fields').select('*').order('sort_order', { ascending: true }),
+      client.from('pendaftar').select('*').order('created_at', { ascending: false }),
+      client.from('banners').select('*').order('urutan', { ascending: true })
+    ]);
+
+    // If cloud DB is completely unseeded on first run, populate initial defaults once
+    if (isInitial && !setRes.error && (!setRes.data || setRes.data.length === 0)) {
+      await seedInitialCloudDataIfEmpty(client);
+      return syncAllFromSupabase(false);
+    }
+
+    let hasChanges = false;
+
+    if (!setRes.error && setRes.data && setRes.data.length > 0) {
+      const nextSettings = { ...appState.settings, ...setRes.data[0] };
+      if (JSON.stringify(nextSettings) !== JSON.stringify(appState.settings)) {
+        appState.settings = nextSettings;
+        setLocalData(STORAGE_KEYS.SETTINGS, appState.settings);
+        hasChanges = true;
+      }
+    }
+
+    if (!jurRes.error && jurRes.data && jurRes.data.length > 0) {
+      if (JSON.stringify(jurRes.data) !== JSON.stringify(appState.jurusan)) {
+        appState.jurusan = jurRes.data;
+        setLocalData(STORAGE_KEYS.JURUSAN, appState.jurusan);
+        hasChanges = true;
+      }
+    }
+
+    if (!gelRes.error && gelRes.data && gelRes.data.length > 0) {
+      if (JSON.stringify(gelRes.data) !== JSON.stringify(appState.gelombang)) {
+        appState.gelombang = gelRes.data;
+        setLocalData(STORAGE_KEYS.GELOMBANG, appState.gelombang);
+        hasChanges = true;
+      }
+    }
+
+    if (!annRes.error && annRes.data) {
+      if (annRes.data.length > 0 && JSON.stringify(annRes.data) !== JSON.stringify(appState.pengumuman)) {
+        appState.pengumuman = annRes.data;
+        setLocalData(STORAGE_KEYS.PENGUMUMAN, appState.pengumuman);
+        hasChanges = true;
+      }
+    }
+
+    if (!formRes.error && formRes.data && formRes.data.length > 0) {
+      if (JSON.stringify(formRes.data) !== JSON.stringify(appState.formFields)) {
+        appState.formFields = formRes.data;
+        setLocalData(STORAGE_KEYS.FORM_FIELDS, appState.formFields);
+        hasChanges = true;
+      }
+    }
+
+    if (!pndRes.error && pndRes.data) {
+      const mappedPnd = pndRes.data.map(p => ({
+        ...p,
+        formData: p.form_data || p.formData || {}
+      }));
+      if (JSON.stringify(mappedPnd) !== JSON.stringify(appState.pendaftar)) {
+        appState.pendaftar = mappedPnd;
+        setLocalData(STORAGE_KEYS.PENDAFTAR, appState.pendaftar);
+        hasChanges = true;
+      }
+    }
+
+    if (!banRes.error && banRes.data && banRes.data.length > 0) {
+      if (JSON.stringify(banRes.data) !== JSON.stringify(appState.banners)) {
+        appState.banners = banRes.data;
+        setLocalData(STORAGE_KEYS.BANNERS, appState.banners);
+        hasChanges = true;
+      }
+    }
+
+    if (isInitial || hasChanges) {
+      renderAllViews();
+      refreshOpenCheckStatusIfVisible();
+    }
+  } catch (err) {
+    console.warn('Supabase sync notice:', err);
+  }
+}
 
 async function initSupabaseCloud() {
   const client = getSupabaseClient();
   if (!client) return;
 
-  try {
-    // 1. Fetch settings
-    const { data: setRows } = await client.from('settings').select('*');
-    if (setRows && setRows.length > 0) {
-      appState.settings = { ...appState.settings, ...setRows[0] };
-      setLocalData(STORAGE_KEYS.SETTINGS, appState.settings);
-    }
-
-    // 2. Fetch jurusan
-    const { data: jurRows } = await client.from('jurusan').select('*');
-    if (jurRows && jurRows.length > 0) {
-      appState.jurusan = jurRows;
-      setLocalData(STORAGE_KEYS.JURUSAN, appState.jurusan);
-    }
-
-    // 3. Fetch gelombang
-    const { data: gelRows } = await client.from('gelombang').select('*');
-    if (gelRows && gelRows.length > 0) {
-      appState.gelombang = gelRows;
-      setLocalData(STORAGE_KEYS.GELOMBANG, appState.gelombang);
-    }
-
-    // 4. Fetch pengumuman
-    const { data: annRows } = await client.from('pengumuman').select('*').order('created_at', { ascending: false });
-    if (annRows && annRows.length > 0) {
-      appState.pengumuman = annRows;
-      setLocalData(STORAGE_KEYS.PENGUMUMAN, appState.pengumuman);
-    }
-
-    // 5. Fetch form_fields
-    const { data: formRows } = await client.from('form_fields').select('*').order('sort_order', { ascending: true });
-    if (formRows && formRows.length > 0) {
-      appState.formFields = formRows;
-      setLocalData(STORAGE_KEYS.FORM_FIELDS, appState.formFields);
-    }
-
-    // 6. Fetch pendaftar
-    const { data: pndRows } = await client.from('pendaftar').select('*').order('created_at', { ascending: false });
-    if (pndRows && pndRows.length > 0) {
-      appState.pendaftar = pndRows.map(p => ({
-        ...p,
-        formData: p.form_data || p.formData || {}
-      }));
-      setLocalData(STORAGE_KEYS.PENDAFTAR, appState.pendaftar);
-    }
-
-    // 7. Fetch banners (safe catch for permission fallback)
-    try {
-      const { data: banRows, error: banErr } = await client.from('banners').select('*').order('urutan', { ascending: true });
-      if (!banErr && banRows && banRows.length > 0) {
-        appState.banners = banRows;
-        setLocalData(STORAGE_KEYS.BANNERS, appState.banners);
-      }
-    } catch (e) {}
-
-    // Re-render all views with cloud data
-    renderAllViews();
-  } catch (err) {
-    console.warn('Initial Supabase sync notice:', err);
-  }
-
-  // Setup Realtime subscriptions
+  await syncAllFromSupabase(true);
   setupRealtimeListeners();
+
+  // Fast resync when user switches back to tab/window + light periodic sync fallback
+  window.addEventListener('focus', () => syncAllFromSupabase(false));
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') syncAllFromSupabase(false);
+  });
+  setInterval(() => {
+    if (document.visibilityState === 'visible') syncAllFromSupabase(false);
+  }, 12000);
+}
+
+function broadcastRealtimeChange(entity, action, record) {
+  const payload = { entity, action, record, sender: CLIENT_TAB_ID, ts: Date.now() };
+  try {
+    if (localBroadcastChannel) localBroadcastChannel.postMessage(payload);
+  } catch (e) {}
+  try {
+    if (realtimeChannel) {
+      realtimeChannel.send({
+        type: 'broadcast',
+        event: 'spmb_instant_sync',
+        payload
+      });
+    }
+  } catch (e) {}
+}
+
+function applyInstantBroadcastEvent(msg) {
+  if (!msg || !msg.entity || msg.sender === CLIENT_TAB_ID) return;
+  const { entity, action, record } = msg;
+  const eventType = action === 'DELETE' ? 'DELETE' : (action === 'INSERT' ? 'INSERT' : 'UPDATE');
+  const synthPayload = eventType === 'DELETE'
+    ? { eventType: 'DELETE', old: record }
+    : { eventType, new: record };
+
+  if (entity === 'pendaftar') handleRealtimePendaftar(synthPayload);
+  else if (entity === 'jurusan') handleRealtimeJurusan(synthPayload);
+  else if (entity === 'gelombang') handleRealtimeGelombang(synthPayload);
+  else if (entity === 'pengumuman') handleRealtimePengumuman(synthPayload);
+  else if (entity === 'form_fields') handleRealtimeFormFields(synthPayload);
+  else if (entity === 'settings') handleRealtimeSettings({ new: record });
+  else if (entity === 'banners') handleRealtimeBanners(synthPayload);
+}
+
+function refreshOpenCheckStatusIfVisible() {
+  const modal = document.getElementById('modalCheckStatus');
+  const input = document.getElementById('inputCheckCode');
+  const resultBox = document.getElementById('checkStatusResultBox');
+  if (modal && !modal.classList.contains('hidden') && input && input.value.trim() && resultBox && !resultBox.classList.contains('hidden')) {
+    window.handleSearchStatus();
+  }
 }
 
 function setupRealtimeListeners() {
@@ -411,7 +567,16 @@ function setupRealtimeListeners() {
   isRealtimeSubscribed = true;
 
   try {
-    client.channel('spmb_realtime_broadcast')
+    realtimeChannel = client.channel('spmb_realtime_broadcast', {
+      config: {
+        broadcast: { self: false }
+      }
+    });
+
+    realtimeChannel
+      .on('broadcast', { event: 'spmb_instant_sync' }, ({ payload }) => {
+        applyInstantBroadcastEvent(payload);
+      })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'pendaftar' }, (payload) => {
         handleRealtimePendaftar(payload);
       })
@@ -434,6 +599,9 @@ function setupRealtimeListeners() {
         handleRealtimeBanners(payload);
       })
       .subscribe((status, err) => {
+        if (status === 'SUBSCRIBED') {
+          syncAllFromSupabase(false);
+        }
         if (err) console.warn('Supabase Realtime subscription warning:', err);
       });
   } catch (e) {
@@ -455,6 +623,8 @@ function handleRealtimePendaftar(payload) {
       renderAdminCounters();
       renderAdminPendaftarTable();
       renderPublicStats();
+      renderGelombangCards();
+      refreshOpenCheckStatusIfVisible();
       if (typeof window.showToast === 'function') {
         window.showToast(`Pendaftar baru masuk secara realtime: ${mapped.nama} (${mapped.kode})`, 'info');
       }
@@ -471,6 +641,7 @@ function handleRealtimePendaftar(payload) {
       renderAdminCounters();
       renderAdminPendaftarTable();
       renderPublicStats();
+      refreshOpenCheckStatusIfVisible();
     }
   } else if (eventType === 'DELETE' && oldRec) {
     appState.pendaftar = appState.pendaftar.filter(p => p.id !== oldRec.id && p.kode !== oldRec.kode);
@@ -478,18 +649,21 @@ function handleRealtimePendaftar(payload) {
     renderAdminCounters();
     renderAdminPendaftarTable();
     renderPublicStats();
+    renderGelombangCards();
+    refreshOpenCheckStatusIfVisible();
   }
 }
 
 function handleRealtimeJurusan(payload) {
   const { eventType, new: newRec, old: oldRec } = payload;
   if (eventType === 'INSERT' && newRec) {
-    if (!appState.jurusan.some(j => j.id === newRec.id)) {
-      appState.jurusan.push(newRec);
-    }
+    const idx = appState.jurusan.findIndex(j => j.id === newRec.id);
+    if (idx === -1) appState.jurusan.push(newRec);
+    else appState.jurusan[idx] = newRec;
   } else if (eventType === 'UPDATE' && newRec) {
     const idx = appState.jurusan.findIndex(j => j.id === newRec.id);
     if (idx !== -1) appState.jurusan[idx] = newRec;
+    else appState.jurusan.push(newRec);
   } else if (eventType === 'DELETE' && oldRec) {
     appState.jurusan = appState.jurusan.filter(j => j.id !== oldRec.id);
   }
@@ -501,12 +675,13 @@ function handleRealtimeJurusan(payload) {
 function handleRealtimeGelombang(payload) {
   const { eventType, new: newRec, old: oldRec } = payload;
   if (eventType === 'INSERT' && newRec) {
-    if (!appState.gelombang.some(g => g.id === newRec.id)) {
-      appState.gelombang.push(newRec);
-    }
+    const idx = appState.gelombang.findIndex(g => g.id === newRec.id);
+    if (idx === -1) appState.gelombang.push(newRec);
+    else appState.gelombang[idx] = newRec;
   } else if (eventType === 'UPDATE' && newRec) {
     const idx = appState.gelombang.findIndex(g => g.id === newRec.id);
     if (idx !== -1) appState.gelombang[idx] = newRec;
+    else appState.gelombang.push(newRec);
   } else if (eventType === 'DELETE' && oldRec) {
     appState.gelombang = appState.gelombang.filter(g => g.id !== oldRec.id);
   }
@@ -520,12 +695,13 @@ function handleRealtimeGelombang(payload) {
 function handleRealtimePengumuman(payload) {
   const { eventType, new: newRec, old: oldRec } = payload;
   if (eventType === 'INSERT' && newRec) {
-    if (!appState.pengumuman.some(p => p.id === newRec.id)) {
-      appState.pengumuman.unshift(newRec);
-    }
+    const idx = appState.pengumuman.findIndex(p => p.id === newRec.id);
+    if (idx === -1) appState.pengumuman.unshift(newRec);
+    else appState.pengumuman[idx] = newRec;
   } else if (eventType === 'UPDATE' && newRec) {
     const idx = appState.pengumuman.findIndex(p => p.id === newRec.id);
     if (idx !== -1) appState.pengumuman[idx] = newRec;
+    else appState.pengumuman.unshift(newRec);
   } else if (eventType === 'DELETE' && oldRec) {
     appState.pengumuman = appState.pengumuman.filter(p => p.id !== oldRec.id);
   }
@@ -537,18 +713,19 @@ function handleRealtimePengumuman(payload) {
 function handleRealtimeFormFields(payload) {
   const { eventType, new: newRec, old: oldRec } = payload;
   if (eventType === 'INSERT' && newRec) {
-    if (!appState.formFields.some(f => f.id === newRec.id)) {
-      appState.formFields.push(newRec);
-    }
+    const idx = appState.formFields.findIndex(f => f.id === newRec.id);
+    if (idx === -1) appState.formFields.push(newRec);
+    else appState.formFields[idx] = newRec;
   } else if (eventType === 'UPDATE' && newRec) {
     const idx = appState.formFields.findIndex(f => f.id === newRec.id);
     if (idx !== -1) appState.formFields[idx] = newRec;
+    else appState.formFields.push(newRec);
   } else if (eventType === 'DELETE' && oldRec) {
     appState.formFields = appState.formFields.filter(f => f.id !== oldRec.id);
   }
   appState.formFields.sort((a, b) => (a.sort_order || 1) - (b.sort_order || 1));
   setLocalData(STORAGE_KEYS.FORM_FIELDS, appState.formFields);
-  renderAdminFormFieldsList();
+  renderAdminFormBuilder();
   renderPublicRegistrationForm();
 }
 
@@ -564,12 +741,13 @@ function handleRealtimeSettings(payload) {
 function handleRealtimeBanners(payload) {
   const { eventType, new: newRec, old: oldRec } = payload;
   if (eventType === 'INSERT' && newRec) {
-    if (!appState.banners.some(b => b.id === newRec.id)) {
-      appState.banners.push(newRec);
-    }
+    const idx = appState.banners.findIndex(b => b.id === newRec.id);
+    if (idx === -1) appState.banners.push(newRec);
+    else appState.banners[idx] = newRec;
   } else if (eventType === 'UPDATE' && newRec) {
     const idx = appState.banners.findIndex(b => b.id === newRec.id);
     if (idx !== -1) appState.banners[idx] = newRec;
+    else appState.banners.push(newRec);
   } else if (eventType === 'DELETE' && oldRec) {
     appState.banners = appState.banners.filter(b => b.id !== oldRec.id);
   }
@@ -863,17 +1041,19 @@ window.handleSaveFormField = function(event) {
   window.showToast('Isian formulir berhasil diperbarui.', 'success');
 
   const client = getSupabaseClient();
+  const fieldRow = {
+    id: newField.id,
+    section: newField.section,
+    label: newField.label,
+    type: newField.type,
+    required: !!newField.required,
+    placeholder: newField.placeholder || '',
+    options: newField.options || [],
+    sort_order: existingIdx !== -1 ? (existingIdx + 1) : appState.formFields.length
+  };
+  broadcastRealtimeChange('form_fields', existingIdx !== -1 ? 'UPDATE' : 'INSERT', fieldRow);
   if (client) {
-    client.from('form_fields').upsert([{
-      id: newField.id,
-      section: newField.section,
-      label: newField.label,
-      type: newField.type,
-      required: !!newField.required,
-      placeholder: newField.placeholder || '',
-      options: newField.options || [],
-      sort_order: existingIdx !== -1 ? (existingIdx + 1) : appState.formFields.length
-    }]).then(({ error }) => {
+    client.from('form_fields').upsert([fieldRow]).then(({ error }) => {
       if (error) console.warn('Supabase upsert form_field error:', error);
     }).catch(err => console.warn('Supabase upsert form_field err:', err));
   }
@@ -888,6 +1068,7 @@ window.confirmDeleteFormField = function(fieldId) {
     renderAdminFormBuilder();
     window.showToast('Kolom isian formulir telah dihapus.', 'info');
 
+    broadcastRealtimeChange('form_fields', 'DELETE', { id: fieldId });
     const client = getSupabaseClient();
     if (client) {
       client.from('form_fields').delete().eq('id', fieldId).then(({ error }) => {
@@ -979,23 +1160,26 @@ window.handleRegistrationSubmit = async function(event) {
     setLocalData(STORAGE_KEYS.PENDAFTAR, appState.pendaftar);
     appState.lastRegisteredStudent = newPendaftar;
 
-    // Send to Supabase Cloud Database for Instant Multi-Device Sync
+    // Send to Supabase Cloud Database & Instant Broadcast for Multi-Device Sync
+    const pendaftarPayload = {
+      id: newPendaftar.id,
+      kode: newPendaftar.kode,
+      nama: newPendaftar.nama,
+      nisn: newPendaftar.nisn,
+      nik: newPendaftar.nik,
+      jurusan: newPendaftar.jurusan,
+      gelombang: newPendaftar.gelombang,
+      asal_sekolah: newPendaftar.asal_sekolah,
+      status: newPendaftar.status,
+      catatan: newPendaftar.catatan,
+      foto_url: newPendaftar.foto_url || '',
+      form_data: newPendaftar.formData || {},
+      created_at: newPendaftar.created_at
+    };
+    broadcastRealtimeChange('pendaftar', 'INSERT', pendaftarPayload);
     const client = getSupabaseClient();
     if (client) {
-      client.from('pendaftar').insert([{
-        id: newPendaftar.id,
-        kode: newPendaftar.kode,
-        nama: newPendaftar.nama,
-        nisn: newPendaftar.nisn,
-        nik: newPendaftar.nik,
-        jurusan: newPendaftar.jurusan,
-        gelombang: newPendaftar.gelombang,
-        asal_sekolah: newPendaftar.asal_sekolah,
-        status: newPendaftar.status,
-        catatan: newPendaftar.catatan,
-        foto_url: newPendaftar.foto_url || '',
-        form_data: newPendaftar.formData || {}
-      }]).then(({ error }) => {
+      client.from('pendaftar').insert([pendaftarPayload]).then(({ error }) => {
         if (error) console.warn('Supabase insert pendaftar warning:', error);
       }).catch(err => console.warn('Supabase insert pendaftar err:', err));
     }
@@ -1067,12 +1251,20 @@ window.openPrintCardModal = function(student) {
 
   const fd = student.formData || {};
 
+  const schoolLabelEl = document.getElementById('printSchoolNameLabel');
+  if (schoolLabelEl) {
+    schoolLabelEl.innerText = `${(appState.settings.nama_sekolah || 'SMK LENTERA BANGSA 2').toUpperCase()} · SPMB TP 2026/2027`;
+  }
   document.getElementById('printCode').innerText = student.kode;
   document.getElementById('printGelombang').innerText = student.gelombang || fd.gelombang || '-';
   document.getElementById('printJurusan').innerText = student.jurusan || fd.jurusan || '-';
   document.getElementById('printTanggalDaftar').innerText = formatDateIndo(student.created_at ? student.created_at.split('T')[0] : '');
   document.getElementById('printStatusBadge').innerHTML = getStatusBadgeHtml(student.status);
   document.getElementById('printSignatureStudent').innerText = `( ${student.nama} )`;
+  const catatanEl = document.getElementById('printCatatanPanitia');
+  if (catatanEl) {
+    catatanEl.innerText = student.catatan || 'Pendaftaran berhasil dikirim. Menunggu verifikasi berkas oleh panitia SPMB.';
+  }
 
   // Chairman Info
   document.getElementById('printKetuaPanitiaName').innerText = appState.settings.nama_ketua_panitia || 'Drs. H. Mulyadi, M.Pd.';
@@ -1100,8 +1292,8 @@ window.openPrintCardModal = function(student) {
       const verifyUrl = `${window.location.origin}/#status?kode=${encodeURIComponent(student.kode)}&nisn=${encodeURIComponent(student.nisn || '')}`;
       new window.QRCode(qrContainer, {
         text: verifyUrl,
-        width: 60,
-        height: 60,
+        width: 56,
+        height: 56,
         colorDark: '#0a192f',
         colorLight: '#ffffff',
         correctLevel: window.QRCode.CorrectLevel.M
@@ -1111,27 +1303,65 @@ window.openPrintCardModal = function(student) {
     }
   }
 
-  // Dynamic Table B: Biodata Siswa
+  // Dynamic Table B: Biodata Siswa (Compact 4-column table + full-width rows for long fields)
   const siswaFields = appState.formFields.filter(f => f.section === 'siswa');
   const tbodySiswa = document.getElementById('printBiodataRows');
   if (tbodySiswa) {
-    tbodySiswa.innerHTML = siswaFields.map(f => {
-      let val = fd[f.id] || student[f.id] || '-';
-      if (f.type === 'date' && val !== '-') val = formatDateIndo(val);
-      return `
-        <tr>
-          <td class="w-36 font-semibold text-slate-600">${f.label}</td>
-          <td class="font-medium text-slate-900 ${f.id === 'nama' ? 'font-bold uppercase text-[9pt]' : ''}">${val}</td>
-        </tr>
-      `;
-    }).join('');
+    let siswaRowsHtml = '';
+    let pairBuffer = [];
+    const flushPair = () => {
+      if (pairBuffer.length === 0) return;
+      const f1 = pairBuffer[0];
+      const f2 = pairBuffer[1];
+      let v1 = fd[f1.id] || student[f1.id] || '-';
+      if (f1.type === 'date' && v1 !== '-') v1 = formatDateIndo(v1);
+      if (f2) {
+        let v2 = fd[f2.id] || student[f2.id] || '-';
+        if (f2.type === 'date' && v2 !== '-') v2 = formatDateIndo(v2);
+        siswaRowsHtml += `
+          <tr>
+            <td class="w-[22%] font-bold text-slate-700 bg-slate-50/60">${f1.label}</td>
+            <td class="w-[28%] font-medium text-slate-900 ${f1.id === 'nisn' || f1.id === 'nik' ? 'font-mono' : ''}">${v1}</td>
+            <td class="w-[22%] font-bold text-slate-700 bg-slate-50/60">${f2.label}</td>
+            <td class="w-[28%] font-medium text-slate-900 ${f2.id === 'nisn' || f2.id === 'nik' ? 'font-mono' : ''}">${v2}</td>
+          </tr>
+        `;
+      } else {
+        siswaRowsHtml += `
+          <tr>
+            <td class="w-[22%] font-bold text-slate-700 bg-slate-50/60">${f1.label}</td>
+            <td colspan="3" class="font-medium text-slate-900">${v1}</td>
+          </tr>
+        `;
+      }
+      pairBuffer = [];
+    };
+
+    siswaFields.forEach(f => {
+      const isFull = f.id === 'nama' || f.id === 'asal_sekolah' || f.type === 'textarea';
+      if (isFull) {
+        flushPair();
+        let val = fd[f.id] || student[f.id] || '-';
+        if (f.type === 'date' && val !== '-') val = formatDateIndo(val);
+        siswaRowsHtml += `
+          <tr>
+            <td class="w-[22%] font-bold text-slate-700 bg-slate-50/60">${f.label}</td>
+            <td colspan="3" class="text-slate-900 ${f.id === 'nama' ? 'font-extrabold uppercase text-[8.5pt]' : 'font-medium'}">${val}</td>
+          </tr>
+        `;
+      } else {
+        pairBuffer.push(f);
+        if (pairBuffer.length === 2) flushPair();
+      }
+    });
+    flushPair();
+    tbodySiswa.innerHTML = siswaRowsHtml;
   }
 
   // Dynamic Table C: Ortu & Kontak
   const ortuFields = appState.formFields.filter(f => f.section === 'ortu');
   const tbodyOrtu = document.getElementById('printOrtuRows');
   if (tbodyOrtu) {
-    // 2 columns pairing for compact A4 single page fit
     let ortuRowsHtml = '';
     for (let i = 0; i < ortuFields.length; i += 2) {
       const f1 = ortuFields[i];
@@ -1140,11 +1370,11 @@ window.openPrintCardModal = function(student) {
       const v2 = f2 ? (fd[f2.id] || '-') : '-';
       ortuRowsHtml += `
         <tr>
-          <td class="w-36 font-semibold text-slate-600">${f1.label}</td>
-          <td class="font-medium text-slate-900">${v1}</td>
+          <td class="w-[22%] font-bold text-slate-700 bg-slate-50/60">${f1.label}</td>
+          <td class="w-[28%] font-medium text-slate-900">${v1}</td>
           ${f2 ? `
-            <td class="w-36 font-semibold text-slate-600">${f2.label}</td>
-            <td class="font-medium text-slate-900">${v2}</td>
+            <td class="w-[22%] font-bold text-slate-700 bg-slate-50/60">${f2.label}</td>
+            <td class="w-[28%] font-medium text-slate-900">${v2}</td>
           ` : '<td colspan="2"></td>'}
         </tr>
       `;
@@ -1168,11 +1398,11 @@ window.openPrintCardModal = function(student) {
       const v2 = f2 ? (fd[f2.id] || '-') : '-';
       extraRowsHtml += `
         <tr>
-          <td class="w-36 font-semibold text-slate-600">${f1.label}</td>
-          <td class="font-medium text-slate-900">${v1}</td>
+          <td class="w-[22%] font-bold text-slate-700 bg-slate-50/60">${f1.label}</td>
+          <td class="w-[28%] font-medium text-slate-900">${v1}</td>
           ${f2 ? `
-            <td class="w-36 font-semibold text-slate-600">${f2.label}</td>
-            <td class="font-medium text-slate-900">${v2}</td>
+            <td class="w-[22%] font-bold text-slate-700 bg-slate-50/60">${f2.label}</td>
+            <td class="w-[28%] font-medium text-slate-900">${v2}</td>
           ` : '<td colspan="2"></td>'}
         </tr>
       `;
@@ -1196,20 +1426,21 @@ window.downloadBuktiPDF = function() {
   if (!element) return;
   if (downloadBtn) {
     downloadBtn.disabled = true;
-    downloadBtn.innerText = 'Menyusun PDF A4...';
+    downloadBtn.innerText = 'Menyusun PDF 1 Lembar A4...';
   }
 
   const opt = {
-    margin: [6, 6, 6, 6],
+    margin: 0,
     filename: `Bukti_Pendaftaran_SPMB_${code}.pdf`,
     image: { type: 'jpeg', quality: 0.98 },
-    html2canvas: { scale: 2, useCORS: true, logging: false },
-    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+    html2canvas: { scale: 2, useCORS: true, logging: false, scrollY: 0 },
+    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+    pagebreak: { mode: ['avoid-all'] }
   };
 
   if (window.html2pdf) {
     window.html2pdf().set(opt).from(element).save().then(() => {
-      window.showToast('Bukti Pendaftaran PDF berhasil diunduh.', 'success');
+      window.showToast('Bukti Pendaftaran PDF (1 Lembar A4) berhasil diunduh.', 'success');
       if (downloadBtn) {
         downloadBtn.disabled = false;
         downloadBtn.innerHTML = `
@@ -1232,54 +1463,120 @@ window.printBuktiNow = function() {
 };
 
 // ================= 8. BLANKO FORMULIR PENDAFTARAN KOSONG (PRECISE 1-PAGE A4) =================
+function buildBlankoCharBoxes(count) {
+  let boxes = '';
+  for (let i = 0; i < count; i++) {
+    boxes += '<span class="char-box"></span>';
+  }
+  return boxes;
+}
+
+function buildBlankoFieldCell(field) {
+  if (field.id === 'nisn') return buildBlankoCharBoxes(10);
+  if (field.id === 'nik') return buildBlankoCharBoxes(16);
+  if (field.type === 'date') return '<span class="char-box"></span><span class="char-box"></span> / <span class="char-box"></span><span class="char-box"></span> / <span class="char-box"></span><span class="char-box"></span><span class="char-box"></span><span class="char-box"></span> <span class="text-[6pt] text-slate-400">(Tgl/Bln/Thn)</span>';
+  if (field.options && field.options.length) {
+    return field.options.map(opt => `<span class="inline-block mr-2.5"><span class="check-box"></span>${opt}</span>`).join('');
+  }
+  if (field.type === 'textarea') {
+    return '<span class="blank-write-box" style="min-height: 28px;"></span>';
+  }
+  return '<span class="blank-write-box"></span>';
+}
+
 window.openBlankoFormulirModal = function() {
   const modal = document.getElementById('modalBlankoFormulir');
   if (!modal) return;
 
-  // Render Gelombang Options
+  const schoolLabelEl = document.getElementById('blankoSchoolNameLabel');
+  if (schoolLabelEl) {
+    schoolLabelEl.innerText = `${(appState.settings.nama_sekolah || 'SMK LENTERA BANGSA 2').toUpperCase()} · SPMB TP 2026/2027`;
+  }
+
+  // Render Gelombang Options with crisp checkboxes
   const gelombangRow = document.getElementById('blankoGelombangRow');
   if (gelombangRow) {
-    gelombangRow.innerHTML = appState.gelombang.map(g => `[ &nbsp; ] ${g.nama.split(' ')[0]} ${g.nama.split(' ')[1] || ''}`).join('&nbsp;&nbsp;&nbsp;&nbsp;');
+    gelombangRow.innerHTML = appState.gelombang.map(g => `<span class="inline-block mr-3"><span class="check-box"></span>${g.nama.split(' ')[0]} ${g.nama.split(' ')[1] || ''}</span>`).join('');
   }
 
-  // Render Jurusan Options
+  // Render Jurusan Options with crisp checkboxes
   const jurusanRow = document.getElementById('blankoJurusanOptions');
   if (jurusanRow) {
-    jurusanRow.innerHTML = ': ' + appState.jurusan.map(j => `[ &nbsp; ] ${j.kode}`).join('&nbsp;&nbsp;&nbsp;&nbsp;');
+    jurusanRow.innerHTML = appState.jurusan.map(j => `<span class="inline-block mr-3"><span class="check-box"></span><strong>${j.kode}</strong> (${j.nama.replace(/\s*\([^)]*\)/, '')})</span>`).join('');
   }
 
-  // Render Biodata Rows in Blanko
+  // Render Biodata Rows in Blanko (Compact 4-column table with bordered text boxes)
   const siswaFields = appState.formFields.filter(f => f.section === 'siswa');
   const tbodySiswa = document.getElementById('blankoBiodataRows');
   if (tbodySiswa) {
-    tbodySiswa.innerHTML = siswaFields.map(f => {
-      let fillType = ': ..................................................................................................................';
-      if (f.id === 'nisn') fillType = ': [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ]';
-      else if (f.id === 'nik') fillType = ': [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ] [ &nbsp; ]';
-      else if (f.id === 'gender') fillType = ': [ &nbsp; ] Laki-laki &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; [ &nbsp; ] Perempuan';
-      else if (f.options && f.options.length) fillType = ': ' + f.options.map(opt => `[ &nbsp; ] ${opt}`).join(' &nbsp;&nbsp; ');
-      return `
-        <tr>
-          <td class="w-40 font-semibold text-slate-600">${f.label}</td>
-          <td class="text-slate-800">${fillType}</td>
-        </tr>
-      `;
-    }).join('');
+    let html = '';
+    let pairBuffer = [];
+    const flushPair = () => {
+      if (pairBuffer.length === 0) return;
+      const f1 = pairBuffer[0];
+      const f2 = pairBuffer[1];
+      if (f2) {
+        html += `
+          <tr>
+            <td class="w-[21%] font-bold text-slate-700 bg-slate-50/60">${f1.label}</td>
+            <td class="w-[29%]">${buildBlankoFieldCell(f1)}</td>
+            <td class="w-[21%] font-bold text-slate-700 bg-slate-50/60">${f2.label}</td>
+            <td class="w-[29%]">${buildBlankoFieldCell(f2)}</td>
+          </tr>
+        `;
+      } else {
+        html += `
+          <tr>
+            <td class="w-[21%] font-bold text-slate-700 bg-slate-50/60">${f1.label}</td>
+            <td colspan="3">${buildBlankoFieldCell(f1)}</td>
+          </tr>
+        `;
+      }
+      pairBuffer = [];
+    };
+
+    siswaFields.forEach(f => {
+      const isFull = f.id === 'nama' || f.id === 'nisn' || f.id === 'nik' || f.id === 'asal_sekolah' || f.id === 'agama' || f.type === 'textarea';
+      if (isFull) {
+        flushPair();
+        html += `
+          <tr>
+            <td class="w-[21%] font-bold text-slate-700 bg-slate-50/60">${f.label}</td>
+            <td colspan="3">${buildBlankoFieldCell(f)}</td>
+          </tr>
+        `;
+      } else {
+        pairBuffer.push(f);
+        if (pairBuffer.length === 2) flushPair();
+      }
+    });
+    flushPair();
+    tbodySiswa.innerHTML = html;
   }
 
-  // Render Ortu Rows in Blanko
+  // Render Ortu Rows in Blanko (Compact 4-column paired with text boxes)
   const ortuFields = appState.formFields.filter(f => f.section === 'ortu');
   const tbodyOrtu = document.getElementById('blankoOrtuRows');
   if (tbodyOrtu) {
-    tbodyOrtu.innerHTML = ortuFields.map(f => `
-      <tr>
-        <td class="w-40 font-semibold text-slate-600">${f.label}</td>
-        <td class="text-slate-800">: ..................................................................................................................</td>
-      </tr>
-    `).join('');
+    let ortuHtml = '';
+    for (let i = 0; i < ortuFields.length; i += 2) {
+      const f1 = ortuFields[i];
+      const f2 = ortuFields[i + 1];
+      ortuHtml += `
+        <tr>
+          <td class="w-[21%] font-bold text-slate-700 bg-slate-50/60">${f1.label}</td>
+          <td class="w-[29%]">${buildBlankoFieldCell(f1)}</td>
+          ${f2 ? `
+            <td class="w-[21%] font-bold text-slate-700 bg-slate-50/60">${f2.label}</td>
+            <td class="w-[29%]">${buildBlankoFieldCell(f2)}</td>
+          ` : '<td colspan="2"></td>'}
+        </tr>
+      `;
+    }
+    tbodyOrtu.innerHTML = ortuHtml;
   }
 
-  // Render Extra Rows in Blanko
+  // Render Extra Rows in Blanko (Compact 4-column paired with text boxes)
   const extraFields = appState.formFields.filter(f => f.section === 'tambahan');
   const tableExtra = document.getElementById('blankoExtraTable');
   const tbodyExtra = document.getElementById('blankoExtraRows');
@@ -1288,16 +1585,22 @@ window.openBlankoFormulirModal = function() {
   } else {
     if (tableExtra) tableExtra.classList.remove('hidden');
     if (tbodyExtra) {
-      tbodyExtra.innerHTML = extraFields.map(f => {
-        let fillType = ': ..................................................................................................................';
-        if (f.options && f.options.length) fillType = ': ' + f.options.map(opt => `[ &nbsp; ] ${opt}`).join(' &nbsp;&nbsp; ');
-        return `
+      let extraHtml = '';
+      for (let i = 0; i < extraFields.length; i += 2) {
+        const f1 = extraFields[i];
+        const f2 = extraFields[i + 1];
+        extraHtml += `
           <tr>
-            <td class="w-40 font-semibold text-slate-600">${f.label}</td>
-            <td class="text-slate-800">${fillType}</td>
+            <td class="w-[21%] font-bold text-slate-700 bg-slate-50/60">${f1.label}</td>
+            <td class="w-[29%]">${buildBlankoFieldCell(f1)}</td>
+            ${f2 ? `
+              <td class="w-[21%] font-bold text-slate-700 bg-slate-50/60">${f2.label}</td>
+              <td class="w-[29%]">${buildBlankoFieldCell(f2)}</td>
+            ` : '<td colspan="2"></td>'}
           </tr>
         `;
-      }).join('');
+      }
+      tbodyExtra.innerHTML = extraHtml;
     }
   }
 
@@ -1316,20 +1619,21 @@ window.downloadBlankoPDF = function() {
 
   if (btn) {
     btn.disabled = true;
-    btn.innerText = 'Menyusun Blanko PDF...';
+    btn.innerText = 'Menyusun Blanko 1 Lembar A4...';
   }
 
   const opt = {
-    margin: [6, 6, 6, 6],
+    margin: 0,
     filename: `Blanko_Formulir_Pendaftaran_SPMB_SMK_Lentera_Bangsa_2.pdf`,
     image: { type: 'jpeg', quality: 0.98 },
-    html2canvas: { scale: 2, useCORS: true, logging: false },
-    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+    html2canvas: { scale: 2, useCORS: true, logging: false, scrollY: 0 },
+    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+    pagebreak: { mode: ['avoid-all'] }
   };
 
   if (window.html2pdf) {
     window.html2pdf().set(opt).from(element).save().then(() => {
-      window.showToast('Blanko Formulir berhasil diunduh.', 'success');
+      window.showToast('Blanko Formulir (1 Lembar A4) berhasil diunduh.', 'success');
       if (btn) {
         btn.disabled = false;
         btn.innerHTML = `
@@ -1877,6 +2181,10 @@ window.handleAdminQuickStatusChange = function(kode, newStatus) {
   window.showToast(`Status ${student.nama} diubah: ${newStatus}`, 'success');
 
   const client = getSupabaseClient();
+  broadcastRealtimeChange('pendaftar', 'UPDATE', {
+    ...student,
+    form_data: student.formData || {}
+  });
   if (client) {
     client.from('pendaftar').update({
       status: student.status,
@@ -1929,6 +2237,10 @@ window.handleSaveEditPendaftar = function(event) {
   renderAdminPendaftarTable();
   window.showToast('Data calon siswa berhasil diperbarui.', 'success');
 
+  broadcastRealtimeChange('pendaftar', 'UPDATE', {
+    ...student,
+    form_data: student.formData || {}
+  });
   const client = getSupabaseClient();
   if (client) {
     client.from('pendaftar').update({
@@ -1957,6 +2269,7 @@ window.confirmDeletePendaftar = function(kode) {
     renderPublicStats();
     window.showToast('Data pendaftar telah dihapus.', 'info');
 
+    broadcastRealtimeChange('pendaftar', 'DELETE', { id: studentId, kode });
     const client = getSupabaseClient();
     if (client) {
       client.from('pendaftar').delete().eq('id', studentId).then(({ error }) => {
@@ -2170,6 +2483,7 @@ window.handleSaveJurusan = function(event) {
   renderPublicRegistrationForm();
   window.showToast('Program keahlian berhasil disimpan.', 'success');
 
+  broadcastRealtimeChange('jurusan', existingIdx !== -1 ? 'UPDATE' : 'INSERT', newJur);
   const client = getSupabaseClient();
   if (client) {
     client.from('jurusan').upsert([newJur]).then(({ error }) => {
@@ -2191,6 +2505,7 @@ window.confirmDeleteJurusan = function(id) {
     renderPublicRegistrationForm();
     window.showToast('Program keahlian telah dihapus.', 'info');
 
+    broadcastRealtimeChange('jurusan', 'DELETE', { id });
     const client = getSupabaseClient();
     if (client) {
       client.from('jurusan').delete().eq('id', id).then(({ error }) => {
@@ -2368,6 +2683,7 @@ window.handleSaveGelombang = function(event) {
   renderPublicRegistrationForm();
   window.showToast('Gelombang pendaftaran berhasil disimpan.', 'success');
 
+  broadcastRealtimeChange('gelombang', existingIdx !== -1 ? 'UPDATE' : 'INSERT', newGel);
   const client = getSupabaseClient();
   if (client) {
     client.from('gelombang').upsert([newGel]).then(({ error }) => {
@@ -2386,6 +2702,7 @@ window.confirmDeleteGelombang = function(id) {
     renderPublicRegistrationForm();
     window.showToast('Gelombang berhasil dihapus.', 'info');
 
+    broadcastRealtimeChange('gelombang', 'DELETE', { id });
     const client = getSupabaseClient();
     if (client) {
       client.from('gelombang').delete().eq('id', id).then(({ error }) => {
@@ -2512,6 +2829,7 @@ window.handleSavePengumuman = function(event) {
   renderAdminPengumumanTable();
   window.showToast('Pengumuman berhasil dipublikasikan.', 'success');
 
+  broadcastRealtimeChange('pengumuman', existingIdx !== -1 ? 'UPDATE' : 'INSERT', newAnn);
   const client = getSupabaseClient();
   if (client) {
     client.from('pengumuman').upsert([newAnn]).then(({ error }) => {
@@ -2529,6 +2847,7 @@ window.confirmDeletePengumuman = function(id) {
     renderAdminPengumumanTable();
     window.showToast('Pengumuman telah dihapus.', 'info');
 
+    broadcastRealtimeChange('pengumuman', 'DELETE', { id });
     const client = getSupabaseClient();
     if (client) {
       client.from('pengumuman').delete().eq('id', id).then(({ error }) => {
@@ -2758,6 +3077,7 @@ window.handleSaveBanner = function(event) {
   renderAdminBannerList();
   window.showToast('Banner promosi berhasil disimpan.', 'success');
 
+  broadcastRealtimeChange('banners', existingIdx !== -1 ? 'UPDATE' : 'INSERT', newBanner);
   const client = getSupabaseClient();
   if (client) {
     client.from('banners').upsert([newBanner]).then(({ error }) => {
@@ -2775,6 +3095,7 @@ window.toggleBannerStatus = function(id) {
   renderAdminBannerList();
   window.showToast(`Status banner: ${b.status}`, 'info');
 
+  broadcastRealtimeChange('banners', 'UPDATE', b);
   const client = getSupabaseClient();
   if (client) {
     client.from('banners').update({ status: b.status }).eq('id', id).then(({ error }) => {
@@ -2796,6 +3117,7 @@ window.confirmDeleteBanner = function(id) {
     renderAdminBannerList();
     window.showToast('Banner berhasil dihapus.', 'info');
 
+    broadcastRealtimeChange('banners', 'DELETE', { id });
     const client = getSupabaseClient();
     if (client) {
       client.from('banners').delete().eq('id', id).then(({ error }) => {
@@ -2821,20 +3143,22 @@ window.handleSaveSchoolSettings = function(event) {
   renderSchoolSettingsUI();
   window.showToast('Identitas sekolah & data panitia berhasil diperbarui.', 'success');
 
+  const settingsPayload = {
+    id: 'default',
+    nama_sekolah: appState.settings.nama_sekolah,
+    slogan: appState.settings.slogan || '',
+    alamat: appState.settings.alamat || '',
+    wa: appState.settings.wa || '',
+    email: appState.settings.email || '',
+    logo_url: appState.settings.logo_url || '',
+    nama_ketua_panitia: appState.settings.nama_ketua_panitia || '',
+    nip_ketua_panitia: appState.settings.nip_ketua_panitia || '',
+    wa_group_url: appState.settings.wa_group_url || ''
+  };
+  broadcastRealtimeChange('settings', 'UPDATE', settingsPayload);
   const client = getSupabaseClient();
   if (client) {
-    client.from('settings').upsert([{
-      id: 'default',
-      nama_sekolah: appState.settings.nama_sekolah,
-      slogan: appState.settings.slogan || '',
-      alamat: appState.settings.alamat || '',
-      wa: appState.settings.wa || '',
-      email: appState.settings.email || '',
-      logo_url: appState.settings.logo_url || '',
-      nama_ketua_panitia: appState.settings.nama_ketua_panitia || '',
-      nip_ketua_panitia: appState.settings.nip_ketua_panitia || '',
-      wa_group_url: appState.settings.wa_group_url || ''
-    }]).then(({ error }) => {
+    client.from('settings').upsert([settingsPayload]).then(({ error }) => {
       if (error) console.warn('Supabase upsert settings error:', error);
     }).catch(err => console.warn('Supabase upsert settings err:', err));
   }
@@ -2851,9 +3175,11 @@ window.handleLogoUpload = function(event) {
     renderSchoolSettingsUI();
     window.showToast('Logo sekolah berhasil diunggah.', 'success');
 
+    const settingsPayload = { id: 'default', ...appState.settings };
+    broadcastRealtimeChange('settings', 'UPDATE', settingsPayload);
     const client = getSupabaseClient();
     if (client) {
-      client.from('settings').update({ logo_url: appState.settings.logo_url }).eq('id', 'default').catch(err => console.warn(err));
+      client.from('settings').upsert([settingsPayload]).catch(err => console.warn(err));
     }
   };
   reader.readAsDataURL(file);

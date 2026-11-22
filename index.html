@@ -64,20 +64,37 @@
 
   <style>
     /* Strict Print Rules for Exact 1-Page A4 Dimensions */
+    @page {
+      size: A4 portrait;
+      margin: 0;
+    }
+
     @media print {
+      html, body {
+        width: 210mm;
+        height: 296mm;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: #fff !important;
+      }
       body * {
         visibility: hidden;
       }
-      #printArea, #printArea *, #blankoPrintArea, #blankoPrintArea * {
+      #modalPrintCard:not(.hidden) #printArea,
+      #modalPrintCard:not(.hidden) #printArea *,
+      #modalBlankoFormulir:not(.hidden) #blankoPrintArea,
+      #modalBlankoFormulir:not(.hidden) #blankoPrintArea * {
         visibility: visible;
       }
-      #printArea, #blankoPrintArea {
-        position: absolute;
+      #modalPrintCard:not(.hidden) #printArea,
+      #modalBlankoFormulir:not(.hidden) #blankoPrintArea {
+        position: fixed;
         left: 0;
         top: 0;
-        width: 100%;
-        margin: 0;
-        padding: 0;
+        width: 210mm;
+        height: 296mm;
+        margin: 0 !important;
+        box-shadow: none !important;
         background: #fff !important;
         color: #000 !important;
       }
@@ -86,42 +103,90 @@
       }
     }
 
-    /* 1-Page A4 Sheet Strict Geometry (fits 297mm height without overflow) */
+    /* 1-Page A4 Sheet Strict Geometry (fits strictly inside 1 A4 sheet in PDF & Print) */
     .a4-sheet {
       width: 210mm;
       max-width: 210mm;
-      min-height: 297mm;
-      max-height: 297mm;
-      padding: 10mm 12mm;
+      height: 296mm;
+      min-height: 296mm;
+      max-height: 296mm;
+      padding: 8mm 11mm;
       margin: 0 auto;
       background: white;
       box-sizing: border-box;
       color: #0f172a;
-      font-size: 8.5pt;
-      line-height: 1.35;
+      font-size: 8pt;
+      line-height: 1.3;
       overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
       page-break-after: avoid;
+      page-break-inside: avoid;
     }
 
-    /* Micro-table styling for compact A4 single page */
+    /* Professional textbook & official table styling */
     .mini-table {
       width: 100%;
       border-collapse: collapse;
-      margin-bottom: 6px;
-      font-size: 8.2pt;
+      margin-bottom: 5px;
+      font-size: 7.8pt;
+      table-layout: fixed;
     }
     .mini-table th, .mini-table td {
-      border: 1px solid #cbd5e1;
-      padding: 3.5px 6px;
+      border: 1px solid #64748b;
+      padding: 3px 5.5px;
       vertical-align: middle;
+      word-wrap: break-word;
     }
     .mini-table th {
-      background-color: #f8fafc;
-      font-weight: 700;
-      color: #1e293b;
+      background-color: #f1f5f9;
+      font-weight: 800;
+      color: #0f172a;
       text-transform: uppercase;
-      font-size: 7.5pt;
-      letter-spacing: 0.02em;
+      font-size: 7.2pt;
+      letter-spacing: 0.03em;
+    }
+
+    /* Bordered Text Box & Digit Input Box for Textbook-style Form Output */
+    .doc-textbox {
+      border: 1px solid #475569;
+      background-color: #ffffff;
+      border-radius: 2px;
+      padding: 3px 6px;
+      min-height: 18px;
+    }
+    .doc-textbox-muted {
+      border: 1px solid #64748b;
+      background-color: #f8fafc;
+      border-radius: 2px;
+      padding: 4px 7px;
+    }
+    .char-box {
+      display: inline-block;
+      width: 13px;
+      height: 15px;
+      border: 1px solid #475569;
+      margin-right: 1.5px;
+      vertical-align: middle;
+      background: #fff;
+    }
+    .check-box {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border: 1px solid #334155;
+      margin-right: 4px;
+      vertical-align: -1px;
+      background: #fff;
+    }
+    .blank-write-box {
+      border: 1px solid #94a3b8;
+      background: #ffffff;
+      min-height: 15px;
+      width: 100%;
+      display: block;
+      padding: 1px 4px;
     }
 
     /* Custom scrollbar */
@@ -879,129 +944,136 @@
       <!-- Viewport -->
       <div class="flex-1 overflow-y-auto bg-slate-200/80 p-3 sm:p-6 flex justify-center">
         
-        <!-- The Printable A4 Sheet: Exact 1 Page (TANPA KOP SURAT, STRUKTUR TABEL MIKRO RAPI) -->
+        <!-- The Printable A4 Sheet: Exact 1 Page (TANPA KOP SURAT, TABEL & TEKS BOX PROFESIONAL) -->
         <div id="printArea" class="a4-sheet shadow-lg">
           
-          <!-- Compact Document Heading (TANPA KOP SURAT) -->
-          <div class="border-b-2 border-slate-900 pb-2 mb-3 flex items-center justify-between">
-            <div>
-              <div class="text-[9pt] font-extrabold uppercase text-slate-700 tracking-wider">SMK LENTERA BANGSA 2</div>
-              <h1 class="text-sm sm:text-base font-extrabold font-display text-slate-900 tracking-tight leading-tight">TANDA BUKTI PENDAFTARAN PESERTA DIDIK BARU</h1>
-              <div class="text-[7.5pt] text-slate-500 font-medium">Tahun Ajaran 2026/2027 · Sistem Penerimaan Murid Baru (SPMB)</div>
-            </div>
-            <div class="text-right">
-              <div class="text-[7.5pt] font-mono text-slate-500 uppercase">No. Registrasi:</div>
-              <div class="text-sm font-extrabold font-mono text-primary-900" id="printCode">LB2-2026-0000</div>
-            </div>
-          </div>
-
-          <!-- Micro Table 1: Jalur Pendaftaran & Status -->
-          <table class="mini-table">
-            <thead>
-              <tr>
-                <th colspan="4" class="text-left bg-slate-100">A. DATA JALUR PENDAFTARAN & STATUS SELEKSI</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td class="w-36 font-semibold text-slate-600">Gelombang Masuk</td>
-                <td class="font-medium text-slate-800" id="printGelombang">-</td>
-                <td class="w-32 font-semibold text-slate-600">Status Seleksi</td>
-                <td id="printStatusBadge">
-                  <span class="font-bold text-amber-800">Menunggu Verifikasi</span>
-                </td>
-              </tr>
-              <tr>
-                <td class="font-semibold text-slate-600">Pilihan Jurusan</td>
-                <td class="font-bold text-emerald-800" id="printJurusan">-</td>
-                <td class="font-semibold text-slate-600">Tanggal Daftar</td>
-                <td class="font-mono text-slate-700" id="printTanggalDaftar">-</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <!-- Layout Split: Left Biodata Table + Right Photo/QR -->
-          <div class="grid grid-cols-12 gap-3 mb-2">
-            
-            <!-- Left Biodata Table (9 Cols) -->
-            <div class="col-span-9">
-              <table class="mini-table mb-0">
-                <thead>
-                  <tr>
-                    <th colspan="2" class="text-left bg-slate-100">B. BIODATA DIRI CALON SISWA</th>
-                  </tr>
-                </thead>
-                <tbody id="printBiodataRows">
-                  <!-- Dynamically mapped to form fields -->
-                </tbody>
-              </table>
+          <div>
+            <!-- Compact Document Heading Box (TANPA KOP SURAT) -->
+            <div class="border-2 border-slate-900 p-2.5 mb-2 flex items-center justify-between bg-slate-50/70">
+              <div>
+                <div class="text-[8pt] font-extrabold uppercase text-emerald-800 tracking-wider" id="printSchoolNameLabel">SMK LENTERA BANGSA 2 · SPMB TP 2026/2027</div>
+                <h1 class="text-sm font-extrabold font-display text-slate-900 tracking-tight leading-tight uppercase">FORMULIR & BUKTI PENDAFTARAN PESERTA DIDIK BARU</h1>
+                <div class="text-[7pt] text-slate-600 font-medium">Dokumen Resmi Registrasi Calon Siswa · Format Tabel &amp; Teks Box</div>
+              </div>
+              <div class="doc-textbox text-right min-w-[140px]">
+                <div class="text-[6.5pt] font-mono text-slate-500 uppercase font-bold">NO. REGISTRASI RESMI</div>
+                <div class="text-xs font-extrabold font-mono text-primary-900" id="printCode">LB2-2026-0000</div>
+              </div>
             </div>
 
-            <!-- Right: Photo & QR (3 Cols) -->
-            <div class="col-span-3 border border-slate-300 rounded p-1.5 flex flex-col items-center justify-between bg-slate-50 text-center">
-              <!-- Photo Box (3x4 cm) -->
-              <div class="w-20 h-26 border border-dashed border-slate-400 rounded flex flex-col items-center justify-center bg-white overflow-hidden relative">
-                <img id="printStudentPhoto" src="" alt="Pas Foto" class="w-full h-full object-cover hidden" />
-                <div id="printPhotoPlaceholder" class="text-center p-1">
-                  <svg class="w-6 h-6 mx-auto text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
-                  <span class="text-[6.5pt] text-slate-400 font-bold block mt-0.5">FOTO 3x4</span>
+            <!-- Micro Table 1: Jalur Pendaftaran & Status -->
+            <table class="mini-table">
+              <thead>
+                <tr>
+                  <th colspan="4" class="text-left">A. DATA JALUR PENDAFTARAN &amp; STATUS SELEKSI</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="w-[19%] font-bold text-slate-700 bg-slate-50/60">Gelombang Masuk</td>
+                  <td class="w-[33%] font-semibold text-slate-900" id="printGelombang">-</td>
+                  <td class="w-[18%] font-bold text-slate-700 bg-slate-50/60">Status Seleksi</td>
+                  <td class="w-[30%]" id="printStatusBadge">
+                    <span class="font-bold text-amber-800">Menunggu Verifikasi</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="font-bold text-slate-700 bg-slate-50/60">Pilihan Jurusan</td>
+                  <td class="font-bold text-emerald-900" id="printJurusan">-</td>
+                  <td class="font-bold text-slate-700 bg-slate-50/60">Tanggal Daftar</td>
+                  <td class="font-mono text-slate-800" id="printTanggalDaftar">-</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <!-- Layout Split: Left Biodata Table + Right Photo/QR Box -->
+            <div class="grid grid-cols-12 gap-2 mb-1.5">
+              
+              <!-- Left Biodata Table (9 Cols) -->
+              <div class="col-span-9">
+                <table class="mini-table mb-0">
+                  <thead>
+                    <tr>
+                      <th colspan="4" class="text-left">B. BIODATA DIRI CALON SISWA</th>
+                    </tr>
+                  </thead>
+                  <tbody id="printBiodataRows">
+                    <!-- Dynamically mapped to form fields -->
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- Right: Photo & QR Textbox Frame (3 Cols) -->
+              <div class="col-span-3 doc-textbox-muted flex flex-col items-center justify-between text-center p-1.5">
+                <!-- Photo Box (3x4 cm) -->
+                <div class="w-[22mm] h-[28mm] border border-slate-500 bg-white flex flex-col items-center justify-center overflow-hidden relative">
+                  <img id="printStudentPhoto" src="" alt="Pas Foto" class="w-full h-full object-cover hidden" />
+                  <div id="printPhotoPlaceholder" class="text-center p-1">
+                    <svg class="w-5 h-5 mx-auto text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
+                    <span class="text-[6pt] text-slate-500 font-bold block mt-0.5">PAS FOTO<br>3 x 4 CM</span>
+                  </div>
+                </div>
+
+                <!-- QR Code Box -->
+                <div class="mt-1 flex flex-col items-center">
+                  <div id="printQrCodeContainer" class="p-0.5 bg-white border border-slate-400"></div>
+                  <span class="text-[6pt] font-mono text-slate-600 font-bold mt-0.5 block">VALIDASI QR</span>
                 </div>
               </div>
 
-              <!-- QR Code -->
-              <div class="mt-1 flex flex-col items-center">
-                <div id="printQrCodeContainer" class="p-0.5 bg-white border border-slate-300 rounded"></div>
-                <span class="text-[6.5pt] font-mono text-slate-500 mt-0.5 block">Verifikasi Resmi</span>
-              </div>
             </div>
 
+            <!-- Micro Table 2: Orang Tua & Kontak -->
+            <table class="mini-table">
+              <thead>
+                <tr>
+                  <th colspan="4" class="text-left">C. DATA ORANG TUA / WALI &amp; KONTAK RESMI</th>
+                </tr>
+              </thead>
+              <tbody id="printOrtuRows">
+                <!-- Dynamically mapped -->
+              </tbody>
+            </table>
+
+            <!-- Micro Table 3: Administrasi Tambahan (Dinamis dari Form Builder) -->
+            <table class="mini-table" id="printExtraTable">
+              <thead>
+                <tr>
+                  <th colspan="4" class="text-left">D. KELENGKAPAN ADMINISTRASI TAMBAHAN</th>
+                </tr>
+              </thead>
+              <tbody id="printExtraRows">
+                <!-- Dynamically mapped -->
+              </tbody>
+            </table>
+
+            <!-- Kotak Teks Catatan Panitia & Pernyataan (Text Box) -->
+            <div class="doc-textbox-muted mb-1.5">
+              <div class="text-[7pt] font-extrabold uppercase text-slate-800 border-b border-slate-300 pb-0.5 mb-1">E. CATATAN VERIFIKASI PANITIA &amp; PERNYATAAN PENDAFTAR</div>
+              <div class="text-[7pt] text-slate-800 font-medium mb-1" id="printCatatanPanitia">
+                Pendaftaran berhasil dikirim. Menunggu verifikasi berkas oleh panitia SPMB.
+              </div>
+              <div class="text-[6.8pt] text-slate-600 italic leading-snug">
+                Saya menyatakan bahwa seluruh data pada formulir ini diisi dengan benar. Dokumen ini dicetak dalam 1 (satu) lembar resmi dan wajib dibawa saat verifikasi berkas di kampus.
+              </div>
+            </div>
           </div>
 
-          <!-- Micro Table 2: Orang Tua & Kontak -->
-          <table class="mini-table">
-            <thead>
-              <tr>
-                <th colspan="4" class="text-left bg-slate-100">C. DATA ORANG TUA / WALI & KONTAK RESMI</th>
-              </tr>
-            </thead>
-            <tbody id="printOrtuRows">
-              <!-- Dynamically mapped -->
-            </tbody>
-          </table>
-
-          <!-- Micro Table 3: Administrasi Tambahan (Dinamis dari Form Builder) -->
-          <table class="mini-table" id="printExtraTable">
-            <thead>
-              <tr>
-                <th colspan="4" class="text-left bg-slate-100">D. KELENGKAPAN ADMINISTRASI TAMBAHAN</th>
-              </tr>
-            </thead>
-            <tbody id="printExtraRows">
-              <!-- Dynamically mapped -->
-            </tbody>
-          </table>
-
-          <!-- Petunjuk Penting Singkat -->
-          <div class="p-2 rounded bg-slate-50 border border-slate-200 text-[7pt] text-slate-600 leading-tight mb-3">
-            <span class="font-bold text-slate-800">Catatan Wajib:</span> Simpan bukti pendaftaran ini dan bawa saat verifikasi berkas di kampus. Pastikan telah bergabung di Grup WhatsApp panitia SPMB untuk pengumuman jadwal wawancara.
-          </div>
-
-          <!-- Tanda Tangan & Pengesahan Dinamis (Fit strictly on 1 Page) -->
-          <div class="pt-2 border-t border-slate-300 grid grid-cols-2 text-center text-[7.5pt]">
-            <div>
-              <div class="text-slate-600">Calon Peserta Didik Baru,</div>
-              <div class="h-10"></div>
-              <div class="font-bold text-slate-900 uppercase border-t border-slate-400 inline-block px-6 pt-0.5" id="printSignatureStudent">( Nama Siswa )</div>
+          <!-- Tanda Tangan & Pengesahan Dinamis (Fit strictly at bottom of 1 Page) -->
+          <div class="border border-slate-500 p-2 bg-white grid grid-cols-2 text-center text-[7.5pt]">
+            <div class="border-r border-slate-300 pr-2">
+              <div class="text-slate-600 font-medium">Mengetahui / Calon Peserta Didik Baru,</div>
+              <div class="h-9"></div>
+              <div class="font-bold text-slate-900 uppercase border-t border-slate-500 inline-block px-5 pt-0.5" id="printSignatureStudent">( Nama Siswa )</div>
             </div>
 
-            <div>
-              <div class="text-slate-600">Karawang, <span id="printDateString">10 November 2026</span></div>
-              <div class="text-slate-600 font-medium">Ketua Panitia SPMB,</div>
-              <div class="h-10 flex items-center justify-center">
-                <div class="text-[7pt] font-bold text-emerald-800/60 rotate-[-5deg] border border-emerald-600/40 rounded px-1.5 py-0.2">PANITIA SPMB</div>
+            <div class="pl-2">
+              <div class="text-slate-600">Karawang, <span id="printDateString">10 November 2026</span> · <span class="font-semibold">Ketua Panitia SPMB,</span></div>
+              <div class="h-9 flex items-center justify-center">
+                <div class="text-[6.5pt] font-bold text-emerald-800/75 border border-emerald-700/50 rounded px-2 py-0.5 tracking-wider">TERVERIFIKASI PANITIA SPMB</div>
               </div>
-              <div class="font-bold text-slate-900 border-t border-slate-400 inline-block px-6 pt-0.5" id="printKetuaPanitiaName">Drs. H. Mulyadi, M.Pd.</div>
-              <div class="text-[6.5pt] text-slate-500" id="printKetuaPanitiaNip">NIP. 19740512 200212 1 004</div>
+              <div class="font-bold text-slate-900 border-t border-slate-500 inline-block px-5 pt-0.5" id="printKetuaPanitiaName">Drs. H. Mulyadi, M.Pd.</div>
+              <div class="text-[6.5pt] text-slate-600" id="printKetuaPanitiaNip">NIP. 19740512 200212 1 004</div>
             </div>
           </div>
 
@@ -1040,92 +1112,105 @@
       <!-- Viewport -->
       <div class="flex-1 overflow-y-auto bg-slate-200/80 p-3 sm:p-6 flex justify-center">
         
-        <!-- The Printable Blanko A4 Sheet: Exact 1 Page -->
+        <!-- The Printable Blanko A4 Sheet: Exact 1 Page (TABEL & TEKS BOX PROFESIONAL) -->
         <div id="blankoPrintArea" class="a4-sheet shadow-lg">
           
-          <div class="border-b-2 border-slate-900 pb-2 mb-3 flex items-center justify-between">
-            <div>
-              <div class="text-[9pt] font-extrabold uppercase text-slate-800">SMK LENTERA BANGSA 2</div>
-              <h2 class="text-sm sm:text-base font-extrabold font-display text-slate-900">FORMULIR PENDAFTARAN PESERTA DIDIK BARU (BLANKO)</h2>
-              <div class="text-[7.5pt] text-slate-500">Tahun Pelajaran 2026/2027 · Isi dengan huruf kapital dan pulpen hitam</div>
+          <div>
+            <!-- Compact Header Box (Tanpa Kop Surat) -->
+            <div class="border-2 border-slate-900 p-2 mb-2 flex items-center justify-between bg-slate-50/70">
+              <div class="flex-1 pr-3">
+                <div class="text-[8pt] font-extrabold uppercase text-emerald-800 tracking-wider" id="blankoSchoolNameLabel">SMK LENTERA BANGSA 2 · SPMB TP 2026/2027</div>
+                <h2 class="text-sm font-extrabold font-display text-slate-900 uppercase leading-tight">BLANKO FORMULIR PENDAFTARAN PESERTA DIDIK BARU</h2>
+                <div class="text-[6.8pt] text-slate-600">Petunjuk: Isi kotak isian dengan HURUF KAPITAL menggunakan pulpen hitam &amp; beri tanda centang (✓) pada pilihan.</div>
+              </div>
+              <div class="flex items-center gap-2 shrink-0">
+                <div class="doc-textbox text-left w-[36mm]">
+                  <div class="text-[6pt] font-bold text-slate-500 uppercase">NO. FORMULIR (PANITIA)</div>
+                  <div class="h-5 border-b border-dotted border-slate-400"></div>
+                  <div class="text-[5.8pt] text-slate-400 mt-0.5">Tgl Terima: ____/____/2026</div>
+                </div>
+                <div class="w-[18mm] h-[22mm] border border-slate-600 bg-white flex items-center justify-center text-center p-1 text-[6pt] font-bold text-slate-500">
+                  PAS FOTO<br>3 x 4 CM
+                </div>
+              </div>
             </div>
-            <div class="w-18 h-22 border border-dashed border-slate-400 rounded flex items-center justify-center text-center p-1 text-[6.5pt] text-slate-400">
-              PAS FOTO<br>3 x 4 CM
-            </div>
+
+            <!-- Micro Table 1: Jalur & Jurusan -->
+            <table class="mini-table">
+              <thead>
+                <tr>
+                  <th colspan="2" class="text-left">A. PILIHAN JALUR &amp; PROGRAM KEAHLIAN (JURUSAN)</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="w-[26%] font-bold text-slate-700 bg-slate-50/60">Gelombang Masuk</td>
+                  <td id="blankoGelombangRow"></td>
+                </tr>
+                <tr>
+                  <td class="font-bold text-slate-700 bg-slate-50/60">Pilihan Program Keahlian</td>
+                  <td id="blankoJurusanOptions"></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <!-- Micro Table 2: Biodata Diri Siswa (With Bordered Text Boxes) -->
+            <table class="mini-table">
+              <thead>
+                <tr>
+                  <th colspan="4" class="text-left">B. IDENTITAS DIRI CALON PESERTA DIDIK</th>
+                </tr>
+              </thead>
+              <tbody id="blankoBiodataRows">
+                <!-- Dynamically mapped to form fields -->
+              </tbody>
+            </table>
+
+            <!-- Micro Table 3: Orang Tua & Kontak -->
+            <table class="mini-table">
+              <thead>
+                <tr>
+                  <th colspan="4" class="text-left">C. DATA ORANG TUA / WALI &amp; KONTAK RESMI</th>
+                </tr>
+              </thead>
+              <tbody id="blankoOrtuRows">
+                <!-- Dynamically mapped to form fields -->
+              </tbody>
+            </table>
+
+            <!-- Micro Table 4: Administrasi Tambahan -->
+            <table class="mini-table" id="blankoExtraTable">
+              <thead>
+                <tr>
+                  <th colspan="4" class="text-left">D. KELENGKAPAN ADMINISTRASI TAMBAHAN</th>
+                </tr>
+              </thead>
+              <tbody id="blankoExtraRows">
+                <!-- Dynamically mapped -->
+              </tbody>
+            </table>
           </div>
 
-          <!-- Micro Table 1: Jalur & Jurusan -->
-          <table class="mini-table">
-            <thead>
-              <tr>
-                <th colspan="2" class="text-left bg-slate-100">A. PILIHAN JALUR & JURUSAN</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td class="w-40 font-semibold text-slate-600">Gelombang Masuk</td>
-                <td id="blankoGelombangRow">[ &nbsp; ] Gelombang 1 &nbsp;&nbsp;&nbsp; [ &nbsp; ] Gelombang 2 &nbsp;&nbsp;&nbsp; [ &nbsp; ] Gelombang 3</td>
-              </tr>
-              <tr>
-                <td class="font-semibold text-slate-600">Pilihan Program Keahlian</td>
-                <td id="blankoJurusanOptions">: [ &nbsp; ] RPL &nbsp;&nbsp;&nbsp; [ &nbsp; ] TKJ &nbsp;&nbsp;&nbsp; [ &nbsp; ] DKV &nbsp;&nbsp;&nbsp; [ &nbsp; ] TO &nbsp;&nbsp;&nbsp; [ &nbsp; ] MP</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <!-- Micro Table 2: Biodata Diri Siswa -->
-          <table class="mini-table">
-            <thead>
-              <tr>
-                <th colspan="2" class="text-left bg-slate-100">B. IDENTITAS DIRI CALON SISWA</th>
-              </tr>
-            </thead>
-            <tbody id="blankoBiodataRows">
-              <!-- Dynamically mapped to form fields -->
-            </tbody>
-          </table>
-
-          <!-- Micro Table 3: Orang Tua & Kontak -->
-          <table class="mini-table">
-            <thead>
-              <tr>
-                <th colspan="2" class="text-left bg-slate-100">C. DATA ORANG TUA / WALI & KONTAK</th>
-              </tr>
-            </thead>
-            <tbody id="blankoOrtuRows">
-              <!-- Dynamically mapped to form fields -->
-            </tbody>
-          </table>
-
-          <!-- Micro Table 4: Administrasi Tambahan -->
-          <table class="mini-table" id="blankoExtraTable">
-            <thead>
-              <tr>
-                <th colspan="2" class="text-left bg-slate-100">D. KELENGKAPAN ADMINISTRASI TAMBAHAN</th>
-              </tr>
-            </thead>
-            <tbody id="blankoExtraRows">
-              <!-- Dynamically mapped -->
-            </tbody>
-          </table>
-
-          <!-- Pernyataan & Tanda Tangan -->
-          <div class="mt-2 pt-2 border-t border-slate-300 text-[7.5pt]">
-            <div class="text-slate-600 mb-4 italic text-[7pt]">
-              "Dengan ini saya menyatakan data yang diisikan adalah benar dan bersedia mematuhi tata tertib SMK Lentera Bangsa 2."
+          <!-- Kotak Teks Pernyataan & Tanda Tangan (Fit strictly at bottom of 1 Page) -->
+          <div>
+            <div class="doc-textbox-muted mb-1.5">
+              <div class="text-[7pt] font-extrabold uppercase text-slate-800">E. PERNYATAAN CALON PESERTA DIDIK &amp; ORANG TUA</div>
+              <div class="text-[6.8pt] text-slate-700 italic leading-snug mt-0.5">
+                "Dengan menandatangani formulir ini, saya menyatakan seluruh data yang diisikan adalah benar dan bersedia mematuhi seluruh tata tertib serta ketentuan SPMB SMK Lentera Bangsa 2."
+              </div>
             </div>
             
-            <div class="grid grid-cols-2 text-center">
-              <div>
-                <div class="text-slate-600">Mengetahui,<br>Orang Tua / Wali Calon Siswa</div>
-                <div class="h-10"></div>
-                <div class="border-t border-slate-400 inline-block px-8 pt-0.5 text-slate-800 font-semibold">( ....................................................... )</div>
+            <div class="border border-slate-500 p-2 bg-white grid grid-cols-2 text-center text-[7.3pt]">
+              <div class="border-r border-slate-300 pr-2">
+                <div class="text-slate-700 font-medium">Mengetahui,<br>Orang Tua / Wali Calon Siswa</div>
+                <div class="h-9"></div>
+                <div class="border-t border-slate-500 inline-block px-6 pt-0.5 text-slate-900 font-bold">( ....................................................... )</div>
               </div>
 
-              <div>
-                <div class="text-slate-600">............................., .................... 2026<br>Calon Peserta Didik Baru</div>
-                <div class="h-10"></div>
-                <div class="border-t border-slate-400 inline-block px-8 pt-0.5 text-slate-800 font-semibold">( ....................................................... )</div>
+              <div class="pl-2">
+                <div class="text-slate-700 font-medium">Karawang, .............................. 2026<br>Calon Peserta Didik Baru</div>
+                <div class="h-9"></div>
+                <div class="border-t border-slate-500 inline-block px-6 pt-0.5 text-slate-900 font-bold">( ....................................................... )</div>
               </div>
             </div>
           </div>
